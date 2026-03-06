@@ -1458,6 +1458,7 @@ let lastRead = 0;
 let mediaRec=null, audChunks=[], recMime='';
 let pendingFile = null;
 let currentAudio=null, currentBtn=null, updateInterval=null;
+const NOTIF_SOUND = 'data:audio/wav;base64,UklGRl9vT1BXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU'; // Short beep
 let S = { tab:'chats', id:null, type:null, reply:null, ctx:null, dms:{}, groups:{}, online:[], notifs:[], keys:{pub:null,priv:null}, e2ee:{}, we:{active:false, ready:[]}, scroll:{} };
 
 const TR = {
@@ -1772,6 +1773,7 @@ function notify(id, text, type) {
     if(document.getElementById(badge)) document.getElementById(badge).style.display = 'block';
 
     if(Notification.permission==='granted'){
+        new Audio(NOTIF_SOUND).play().catch(e=>{});
         let opts={body:text,icon:'?action=icon',tag:'mw-'+id};
         if(navigator.serviceWorker&&navigator.serviceWorker.controller) navigator.serviceWorker.ready.then(r=>r.showNotification(title,opts));
         else new Notification(title,opts);
@@ -2063,18 +2065,73 @@ async function reqObservatory() {
     }
 }
 
+function updateListDOM(id, list, renderer) {
+    let c = document.getElementById(id);
+    if(!c) return;
+    let loader = c.querySelector('.tab-loader');
+    if(loader) loader.remove();
+    
+    let map = new Map();
+    Array.from(c.children).forEach(el => { if(el.dataset.key) map.set(el.dataset.key, el); });
+    
+    list.forEach((item, i) => {
+        let el = map.get(String(item.key));
+        if(el) {
+            renderer(el, item, true);
+            map.delete(String(item.key));
+        } else {
+            el = document.createElement('div');
+            el.className = 'list-item';
+            el.dataset.key = item.key;
+            renderer(el, item, false);
+        }
+        if(c.children[i] !== el) {
+            if(i < c.children.length) c.insertBefore(el, c.children[i]);
+            else c.appendChild(el);
+        }
+    });
+    map.forEach(el => el.remove());
+}
+
+function renderDmItem(el, d, isUpdate) {
+    let isActive = S.id == d.u && S.type == 'dm';
+    if(el.classList.contains('active') !== isActive) el.classList.toggle('active', isActive);
+    if(!isUpdate) {
+        el.onclick = () => openChat('dm', d.u);
+        el.oncontextmenu = (e) => onChatListContext(e, 'dm', d.u);
+    }
+    let html = `<div class="avatar" style="background-image:url('${d.av}')">${d.av?'':d.u[0].toUpperCase()}</div><div style="flex:1"><div style="font-weight:bold;display:flex;align-items:center">${d.u} ${d.lock} ${d.ou?'<span style="color:#0f0;font-size:0.8em;margin-left:4px">●</span>':''}</div><div style="font-size:0.8em;color:#888">${d.last}</div></div>`;
+    if(el.innerHTML !== html) el.innerHTML = html;
+}
+
+function renderGroupItem(el, item, isUpdate) {
+    let g = item.g;
+    let isChan = g.category === 'channel';
+    let isActive = S.id == g.id && S.type == (isChan ? 'channel' : 'group');
+    if(el.classList.contains('active') !== isActive) el.classList.toggle('active', isActive);
+    if(!isUpdate) {
+        let t = isChan ? 'channel' : 'group';
+        el.onclick = () => openChat(t, g.id);
+        el.oncontextmenu = (e) => onChatListContext(e, t, g.id);
+    }
+    let lock = S.e2ee[g.id] ? '<svg viewBox="0 0 24 24" width="14" style="vertical-align:middle;margin-left:4px;fill:var(--accent)"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-9-2c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6zm9 14H6V10h12v10zm-6-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z"/></svg>' : '';
+    let html = `<div class="avatar">${isChan?'📢':'#'}</div><div><div style="font-weight:bold;display:flex;align-items:center">${g.name} ${lock}</div><div style="font-size:0.8em;color:#888">${g.type}</div></div>`;
+    if(el.innerHTML !== html) el.innerHTML = html;
+}
+
 async function renderLists(){
     try {
-        let dh='';
         const t = TR[curLang];
         let filter = document.getElementById('chat-search').value.toLowerCase();
         let chatFilter = document.getElementById('chat-search').value.toLowerCase();
         let groupFilter = document.getElementById('group-search') ? document.getElementById('group-search').value.toLowerCase() : '';
         let channelFilter = document.getElementById('channel-search') ? document.getElementById('channel-search').value.toLowerCase() : '';
+        
         let keys = (await dbOp('readonly', s => s.getAllKeys())) || [];
+        let dms = [];
         for(let k of keys){
             if(k.startsWith('mw_dm_')){
-                let u=k.split('mw_dm_')[1];
+                let u = k.split('mw_dm_')[1];
                 if(filter && !u.toLowerCase().includes(filter)) continue;
                 if(chatFilter && !u.toLowerCase().includes(chatFilter)) continue;
                 let h = await get('dm', u);
@@ -2085,35 +2142,40 @@ async function renderLists(){
                     if(lastMsg.type === 'image') last = '📷 Image';
                     else if(lastMsg.type === 'audio') last = '🎤 Voice Message';
                     else if(lastMsg.type === 'file') last = '📁 File';
-                    else last = lastMsg.message;
+                    else last = lastMsg.message || '';
                 }
                 if(last.length>30)last=last.substring(0,30)+'...';
                 let ou=S.online.find(x=>x.username==u);
                 let av=ou?ou.avatar:'';
-                dh+=`<div class="list-item ${S.id==u?'active':''}" onclick="openChat('dm','${u}')" oncontextmenu="onChatListContext(event, 'dm', '${u}')">
-                    <div class="avatar" style="background-image:url('${av}')">${av?'':u[0].toUpperCase()}</div>
-                    <div style="flex:1"><div style="font-weight:bold;display:flex;align-items:center">${u} ${lock} ${ou?'<span style="color:#0f0;font-size:0.8em;margin-left:4px">●</span>':''}</div><div style="font-size:0.8em;color:#888">${last}</div></div>
-                    </div>`;
+                dms.push({key: u, u, last, av, ou, lock, ts: lastMsg ? lastMsg.timestamp : 0});
             }
         }
-        document.getElementById('list-chats').innerHTML=dh;
-        let gh='';
-        let ch='';
-        Object.values(S.groups).forEach(g=>{
+        dms.sort((a,b) => b.ts - a.ts);
+        updateListDOM('list-chats', dms, renderDmItem);
+
+        let groupsList = [];
+        let channelsList = [];
+        let groups = [];
+        for(let g of Object.values(S.groups)) {
+            let h = await get('group', g.id);
+            let lastMsg = h.length ? h[h.length-1] : null;
+            groups.push({g, ts: lastMsg ? lastMsg.timestamp : (g.created_at || 0)});
+        }
+        groups.sort((a,b) => b.ts - a.ts);
+        
+        groups.forEach(item => {
+            let g = item.g;
             let isChan = g.category === 'channel';
             if(isChan && channelFilter && !g.name.toLowerCase().includes(channelFilter)) return;
             if(!isChan && groupFilter && !g.name.toLowerCase().includes(groupFilter)) return;
             
-            let lock = S.e2ee[g.id] ? '<svg viewBox="0 0 24 24" width="14" style="vertical-align:middle;margin-left:4px;fill:var(--accent)"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-9-2c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6zm9 14H6V10h12v10zm-6-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z"/></svg>' : '';
-            let html = `<div class="list-item ${S.id==g.id?'active':''}" onclick="openChat('${isChan?'channel':'group'}',${g.id})" oncontextmenu="onChatListContext(event, '${isChan?'channel':'group'}', ${g.id})">
-                <div class="avatar">${isChan?'📢':'#'}</div>
-                <div><div style="font-weight:bold;display:flex;align-items:center">${g.name} ${lock}</div><div style="font-size:0.8em;color:#888">${g.type}</div></div>
-            </div>`;
-            
-            if(isChan) ch += html; else gh += html;
+            item.key = g.id;
+            if(isChan) channelsList.push(item); else groupsList.push(item);
         });
-        document.getElementById('list-groups').innerHTML=gh;
-        document.getElementById('list-channels').innerHTML=ch;
+        
+        updateListDOM('list-groups', groupsList, renderGroupItem);
+        updateListDOM('list-channels', channelsList, renderGroupItem);
+
         document.getElementById('online-count').innerText=S.online.length;
         let sp=document.getElementById('app-splash'); if(sp){ sp.style.transition='opacity 0.2s'; sp.style.opacity=0; setTimeout(()=>sp.remove(),200); }
     } catch(e) { console.error("RenderLists error", e); }
