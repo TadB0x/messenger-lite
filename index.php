@@ -2617,8 +2617,8 @@ function showContextMenu(e, type, data) {
     menu.style.display = 'block';
     
     let x = e.clientX, y = e.clientY;
-    if (x + 180 > window.innerWidth) x = window.innerWidth - 190;
-    if (y + menu.offsetHeight > window.innerHeight) y = window.innerHeight - menu.offsetHeight;
+    if (x + menu.offsetWidth > window.innerWidth) x -= menu.offsetWidth;
+    if (y + menu.offsetHeight > window.innerHeight) y -= menu.offsetHeight;
     menu.style.left = x + 'px';
     menu.style.top = y + 'px';
     if(navigator.vibrate) navigator.vibrate(30);
