@@ -1336,9 +1336,18 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('?action=sw');
             </div>
         </div>
         <div id="tab-public" class="tab-content" style="display:none">
-            <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%">
-                <div style="font-size:1.2rem;color:#888" data-i18n="online_users">Online Users</div>
-                <div id="online-count" style="font-size:4rem;font-weight:bold;color:var(--accent)">0</div>
+            <div class="panel-header" style="justify-content:space-between;border-bottom:1px solid var(--border);padding:10px 15px">
+                <div style="font-weight:bold" data-i18n="tab_public">Public Chat</div>
+                <div style="font-size:0.8rem;color:var(--accent)"><span id="online-count">0</span> <span data-i18n="online_users">Online</span></div>
+            </div>
+            <div id="public-msgs" class="messages" style="flex:1;overflow-y:auto;background:var(--bg);padding:10px"></div>
+            <div class="input-area" style="background:var(--panel);padding:10px">
+                <div class="input-wrapper">
+                    <textarea id="public-txt" rows="1" placeholder="Type a message..." style="width:100%;padding:10px 12px;border-radius:20px;border:none;background:var(--input-bg);color:var(--text);outline:none;box-sizing:border-box;resize:none;height:40px;font-family:inherit;line-height:1.4;display:block" onkeydown="if(event.key=='Enter' && !event.shiftKey){event.preventDefault();send()}"></textarea>
+                </div>
+                <button class="btn-icon" onclick="send()" style="color:var(--accent)">
+                    <svg viewBox="0 0 24 24" width="24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                </button>
             </div>
         </div>
         <div id="tab-observatory" class="tab-content" style="display:none" <?php if ($lightweightMode) echo 'hidden'; ?>>
@@ -1790,8 +1799,18 @@ async function poll(){
             if(m.type=='delete'){ await removeMsg('dm',m.from_user,m.extra_data); continue; }
             if(m.type=='read'){ 
                 let h=await get('dm',m.from_user); 
-                h.forEach(x=>{if(x.from_user==ME && x.timestamp<=m.extra_data)x.read=true}); 
-                await save('dm',m.from_user,h); if(S.id==m.from_user) renderChat(); 
+                let changed = false;
+                h.forEach(x=>{if(x.from_user==ME && x.timestamp<=m.extra_data && !x.read){x.read=true; changed=true;}}); 
+                if(changed) await save('dm',m.from_user,h); 
+                if(S.id==m.from_user && S.type=='dm') {
+                    document.querySelectorAll('.msg.out').forEach(node => {
+                        let ts = parseInt(node.id.split('-')[1]);
+                        let meta = node.querySelector('.msg-meta > span');
+                        if(ts <= m.extra_data && meta && meta.innerText === '✓') {
+                            meta.outerHTML = '<span style="color:#4fc3f7;margin-left:3px">✓✓</span>';
+                        }
+                    });
+                }
                 continue; 
             }
             if(m.type=='wencrypt_ready'){ handleWeReady(m); continue; }
@@ -1920,7 +1939,8 @@ async function store(t,i,m){
         if(h[h.length-1].timestamp == m.timestamp) {
             let prev = h.length>1 ? h[h.length-2] : null;
             let show = (t=='public'||t=='group'||t=='channel') && m.from_user!=ME && (!prev || prev.from_user!=m.from_user);
-            document.getElementById('msgs').appendChild(createMsgNode(m, show, h));
+            let c = (t=='public') ? document.getElementById('public-msgs') : document.getElementById('msgs');
+            if(c) c.appendChild(createMsgNode(m, show, h));
             scrollToBottom(false);
         } else renderChat();
     }
@@ -2058,12 +2078,19 @@ function switchTab(t){
     document.getElementById('nav-'+t).classList.add('active');
     document.querySelectorAll('.tab-content').forEach(e=>e.style.display='none');
     
-    if(t=='public') openChat('public', 'global');
+    if(t=='public') {
+        S.type='public'; S.id='global'; S.reply=null;
+        renderChat();
+        scrollToBottom(true);
+    }
     if(t=='observatory') {
         document.getElementById('chat-view').style.display='none';
         document.getElementById('observatory-view').style.display='flex';
         loadObservatory();
         updateWorldClocks();
+    } else if(t=='public') {
+        document.getElementById('observatory-view').style.display='none';
+        document.getElementById('chat-view').style.display='none';
     } else {
         document.getElementById('observatory-view').style.display='none';
         document.getElementById('chat-view').style.display='flex';
@@ -2183,34 +2210,60 @@ function updateListDOM(id, list, renderer) {
 
 function renderDmItem(el, d, isUpdate) {
     let isActive = S.id == d.u && S.type == 'dm';
-    if(el.classList.contains('active') !== isActive) el.classList.toggle('active', isActive);
     if(!isUpdate) {
         el.onclick = () => openChat('dm', d.u);
         el.oncontextmenu = (e) => onChatListContext(e, 'dm', d.u);
+        el.innerHTML = `<div class="avatar"></div>
+                        <div style="flex:1">
+                            <div style="font-weight:bold;display:flex;align-items:center" class="chat-list-title"></div>
+                            <div style="font-size:0.8em;color:#888;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" class="chat-list-last"></div>
+                        </div>`;
+    }
 
-    }
-    if (!S.dmSort) {
-        S.dmSort = {};
-    }
-    if (!S.dmSort[d.u]) {
-    }
-    let html = `<div class="avatar" style="background-image:url('${d.av}')">${d.av?'':d.u[0].toUpperCase()}</div><div style="flex:1"><div style="font-weight:bold;display:flex;align-items:center">${d.u} ${d.lock} ${d.ou?'<span style="color:#0f0;font-size:0.8em;margin-left:4px">●</span>':''}</div><div style="font-size:0.8em;color:#888">${d.last}</div></div>`;
-    if(el.innerHTML !== html) el.innerHTML = html;
+    if(el.classList.contains('active') !== isActive) el.classList.toggle('active', isActive);
+
+    let avatarEl = el.querySelector('.avatar');
+    let newAv = d.av ? `url('${d.av}')` : '';
+    if (avatarEl.style.backgroundImage !== newAv) avatarEl.style.backgroundImage = newAv;
+    let avatarText = d.av ? '' : d.u[0].toUpperCase();
+    if (avatarEl.innerText !== avatarText) avatarEl.innerText = avatarText;
+
+    let titleEl = el.querySelector('.chat-list-title');
+    let titleHTML = `${esc(d.u)} ${d.lock} ${d.ou?'<span style="color:#0f0;font-size:0.8em;margin-left:4px">●</span>':''}`;
+    if (titleEl.innerHTML !== titleHTML) titleEl.innerHTML = titleHTML;
+
+    let lastEl = el.querySelector('.chat-list-last');
+    if (lastEl.innerText !== d.last) lastEl.innerText = d.last;
 }
 
 function renderGroupItem(el, item, isUpdate) {
     let g = item.g;
     let isChan = g.category === 'channel';
     let isActive = S.id == g.id && S.type == (isChan ? 'channel' : 'group');
-    if(el.classList.contains('active') !== isActive) el.classList.toggle('active', isActive);
     if(!isUpdate) {
         let t = isChan ? 'channel' : 'group';
         el.onclick = () => openChat(t, g.id);
         el.oncontextmenu = (e) => onChatListContext(e, t, g.id);
+        el.innerHTML = `<div class="avatar"></div>
+                        <div>
+                            <div style="font-weight:bold;display:flex;align-items:center" class="chat-list-title"></div>
+                            <div style="font-size:0.8em;color:#888" class="chat-list-subtitle"></div>
+                        </div>`;
     }
+
+    if(el.classList.contains('active') !== isActive) el.classList.toggle('active', isActive);
+
+    let avatarEl = el.querySelector('.avatar');
+    let avatarHTML = isChan?'📢':'#';
+    if (avatarEl.innerHTML !== avatarHTML) avatarEl.innerHTML = avatarHTML;
+
+    let titleEl = el.querySelector('.chat-list-title');
     let lock = S.e2ee[g.id] ? '<svg viewBox="0 0 24 24" width="14" style="vertical-align:middle;margin-left:4px;fill:var(--accent)"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-9-2c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6zm9 14H6V10h12v10zm-6-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z"/></svg>' : '';
-    let html = `<div class="avatar">${isChan?'📢':'#'}</div><div><div style="font-weight:bold;display:flex;align-items:center">${g.name} ${lock}</div><div style="font-size:0.8em;color:#888">${g.type}</div></div>`;
-    if(el.innerHTML !== html) el.innerHTML = html;
+    let titleHTML = `${esc(g.name)} ${lock}`;
+    if (titleEl.innerHTML !== titleHTML) titleEl.innerHTML = titleHTML;
+
+    let subtitleEl = el.querySelector('.chat-list-subtitle');
+    if (subtitleEl.innerText !== g.type) subtitleEl.innerText = g.type;
 }
 
 
@@ -2235,7 +2288,7 @@ async function renderLists(){
                     if(lastMsg.type === 'image') last = '📷 Image';
                     else if(lastMsg.type === 'audio') last = '🎤 Voice Message';
                     else if(lastMsg.type === 'file') last = '📁 File';
-                    else last = lastMsg.message || '';
+                    else last = esc(lastMsg.message || '');
                 }
                 if(last.length>30)last=last.substring(0,30)+'...';
                 let ou=S.online.find(x=>x.username==u);
@@ -2409,7 +2462,9 @@ function createMsgNode(m, showSender, history){
 
 async function renderChat(){
     let h = await get(S.type,S.id);
-    let c=document.getElementById('msgs'); c.innerHTML='';
+    let c = (S.type=='public') ? document.getElementById('public-msgs') : document.getElementById('msgs');
+    if(!c) return;
+    c.innerHTML='';
     let last=null, lastDate=null;
     h.forEach(m=>{
         let d = new Date(m.timestamp*1000);
@@ -2440,13 +2495,14 @@ function closeChat() {
 }
 
 async function send(){
-    let txt=document.getElementById('txt').value.trim();
+    let isPub = S.type === 'public';
+    let inputEl = isPub ? document.getElementById('public-txt') : document.getElementById('txt');
+    let txt=inputEl.value.trim();
     if(!txt)return;
     
     // Optimistic UI
-    document.getElementById('txt').value=''; 
-    document.getElementById('txt').style.height='40px';
-    toggleMainBtn();
+    inputEl.value=''; 
+    if(!isPub) { document.getElementById('txt').style.height='40px'; toggleMainBtn(); }
     if(navigator.vibrate) navigator.vibrate(20);
     let replyId = S.reply;
     cancelReply();
@@ -2895,7 +2951,8 @@ function nukeGroup(gid){
 }
 
 function scrollToBottom(force){ 
-    let c=document.getElementById('msgs'); 
+    let c = (S.type=='public') ? document.getElementById('public-msgs') : document.getElementById('msgs');
+    if(!c) return;
     if(force) { c.scrollTop=c.scrollHeight; return; }
     if(c.scrollHeight - c.scrollTop - c.clientHeight < 150) c.scrollTo({ top: c.scrollHeight, behavior: 'smooth' });
 }
