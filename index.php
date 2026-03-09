@@ -1882,6 +1882,7 @@ async function poll(){
             if(m.type=='delete'){ await removeMsg('public','global',m.extra_data); continue; }
             await store('public','global',m);
             if(S.tab!='public') notify('global', m.message, 'public');
+            notify('global', m.message, 'public');
         }
         if(S.type=='dm' && d.typing && d.typing.includes(S.id)) document.getElementById('typing-ind').style.display='block'; else document.getElementById('typing-ind').style.display='none';
 
@@ -2134,7 +2135,6 @@ function switchTab(t){
         scrollToBottom(true);
     }
     if(t=='observatory') {
-    } else if(t=='observatory') {
         document.getElementById('chat-view').style.display='none';
         document.getElementById('observatory-view').style.display='flex';
         loadObservatory();
@@ -2263,6 +2263,7 @@ function renderDmItem(el, d, isUpdate) {
     let isActive = S.id == d.u && S.type == 'dm';
     if(!isUpdate) {
         el.onclick = () => openChat('dm', d.u);
+        el.onclick = () => openChat(d.type||'dm', d.key);
         el.oncontextmenu = (e) => onChatListContext(e, 'dm', d.u);
         el.innerHTML = `<div class="avatar"></div>
                         <div style="flex:1">
@@ -2278,6 +2279,15 @@ function renderDmItem(el, d, isUpdate) {
     if (avatarEl.style.backgroundImage !== newAv) avatarEl.style.backgroundImage = newAv;
     let avatarText = d.av ? '' : d.u[0].toUpperCase();
     if (avatarEl.innerText !== avatarText) avatarEl.innerText = avatarText;
+    if(d.isPublic) {
+        avatarEl.innerHTML = '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>';
+        avatarEl.style.backgroundImage = 'none';
+    } else {
+        let newAv = d.av ? `url('${d.av}')` : '';
+        if (avatarEl.style.backgroundImage !== newAv) avatarEl.style.backgroundImage = newAv;
+        let avatarText = d.av ? '' : d.u[0].toUpperCase();
+        if (avatarEl.innerText !== avatarText) avatarEl.innerText = avatarText;
+    }
 
     let titleEl = el.querySelector('.chat-list-title');
     let titleHTML = `${esc(d.u)} ${d.lock} ${d.ou?'<span style="color:#0f0;font-size:0.8em;margin-left:4px">●</span>':''}`;
@@ -2327,6 +2337,19 @@ async function renderLists(){
         
         let keys = (await dbOp('readonly', s => s.getAllKeys())) || [];
         let dms = [];
+        
+        // Public Chat Injection
+        let pubH = await get('public', 'global');
+        let pubLast = pubH.length ? pubH[pubH.length-1] : null;
+        let pubMsg = t.start_chat;
+        if(pubLast) {
+             if(pubLast.type === 'image') pubMsg = '📷 Image';
+             else if(pubLast.type === 'audio') pubMsg = '🎤 Voice Message';
+             else if(pubLast.type === 'file') pubMsg = '📁 File';
+             else pubMsg = esc(pubLast.message || '');
+        }
+        dms.push({key: 'global', u: t.tab_public + ' Chat', last: pubMsg, type: 'public', isPublic: true, ts: pubLast ? pubLast.timestamp : 0, lock: ''});
+
         for(let k of keys){
             if(k.startsWith('mw_dm_')){
                 let u = k.split('mw_dm_')[1];
@@ -2418,6 +2441,8 @@ async function openChat(t,i){
     } else if(t=='public') {
         tit="Public Chat"; sub="Global Room (5m TTL)";
         document.getElementById('chat-av').innerText='P';
+        document.getElementById('chat-av').innerHTML = '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>';
+        document.getElementById('chat-av').style.backgroundImage = 'none';
     }
     document.getElementById('chat-title').innerText=tit;
     document.getElementById('chat-sub').innerText=sub;
@@ -2558,12 +2583,14 @@ function closeChat() {
 async function send(){
     let isPub = S.type === 'public';
     let inputEl = isPub ? document.getElementById('public-txt') : document.getElementById('txt');
+    let inputEl = document.getElementById('txt');
     let txt=inputEl.value.trim();
     if(!txt)return;
     
     // Optimistic UI
     inputEl.value=''; 
     if(!isPub) { document.getElementById('txt').style.height='40px'; toggleMainBtn(); }
+    document.getElementById('txt').style.height='40px'; toggleMainBtn();
     if(navigator.vibrate) navigator.vibrate(20);
     let replyId = S.reply;
     cancelReply();
