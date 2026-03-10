@@ -31,6 +31,8 @@ try {
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
     $db->exec("PRAGMA journal_mode=WAL;");
+    $db->exec("PRAGMA synchronous = NORMAL;");
+    $db->exec("PRAGMA temp_store = MEMORY;");
 
     // Schema Migration System
     $ver = (int)$db->query("PRAGMA user_version")->fetchColumn();
@@ -596,7 +598,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // DMs (Fetch)
-        $stmt = $db->prepare("SELECT * FROM messages WHERE to_user = ? ORDER BY id ASC");
+        $stmt = $db->prepare("SELECT * FROM messages WHERE to_user = ? ORDER BY id ASC LIMIT 200");
         $stmt->execute([$me]);
         $dms = $stmt->fetchAll();
 
@@ -767,7 +769,7 @@ loadData();
 <meta name="theme-color" content="#0f0518">
 <link rel="icon" href="?action=icon" type="image/svg+xml">
 <?php if (!$lightweightMode): ?>
-<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@100;300;400;500&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@100;300;400;700&family=Roboto:wght@100;300;400;500&display=swap" rel="stylesheet">
@@ -807,7 +809,7 @@ loadData();
         background-color: #202124; z-index: 9999;
         background-color: #000000; z-index: 9999;
         display: flex; justify-content: center; align-items: center;
-        animation: screenFadeOut 0.5s ease-in-out 1.5s forwards;
+        animation: screenFadeOut 0.5s ease-in-out 0.2s forwards;
         pointer-events: none;
     }
     .splash-screen .word {
@@ -816,7 +818,7 @@ loadData();
         display: grid; grid-template-columns: auto auto; justify-items: center;
         line-height: 0.8; gap: 0.15em; direction: ltr;
         line-height: 0.8; gap: 0.15em; text-shadow: 0 0 30px #bf00ff; direction: ltr;
-        animation: fadeWordOut 0.3s cubic-bezier(0.55, 0.085, 0.68, 0.53) 1.0s forwards;
+        animation: fadeWordOut 0.3s cubic-bezier(0.55, 0.085, 0.68, 0.53) 0.5s forwards;
     }
     .splash-screen .word span { opacity: 0; position: relative; }
 
@@ -824,10 +826,10 @@ loadData();
     @keyframes fadeWordOut { from { opacity: 1; transform: scale(1); filter: blur(0); } to { opacity: 0; transform: scale(1.1); filter: blur(10px); } }
     @keyframes screenFadeOut { to { opacity: 0; visibility: hidden; } }
 
-    .splash-screen .word span:nth-child(1) { animation: letterAppear 0.3s ease-out 0.05s forwards; }
-    .splash-screen .word span:nth-child(2) { animation: letterAppear 0.3s ease-out 0.15s forwards; }
-    .splash-screen .word span:nth-child(3) { animation: letterAppear 0.3s ease-out 0.25s forwards; }
-    .splash-screen .word span:nth-child(4) { animation: letterAppear 0.3s ease-out 0.30s forwards; }
+    .splash-screen .word span:nth-child(1) { animation: letterAppear 0.3s ease-out 0.0s forwards; }
+    .splash-screen .word span:nth-child(2) { animation: letterAppear 0.3s ease-out 0.1s forwards; }
+    .splash-screen .word span:nth-child(3) { animation: letterAppear 0.3s ease-out 0.2s forwards; }
+    .splash-screen .word span:nth-child(4) { animation: letterAppear 0.3s ease-out 0.3s forwards; }
 
     .lang-toggle { position: absolute; top: 20px; right: 20px; display: flex; gap: 15px; z-index: 20; }
     .lang-opt { font-weight: 500; color: #9aa0a6; cursor: pointer; transition: 0.2s; font-size: 0.9rem; }
@@ -1242,10 +1244,10 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('?action=sw');
     .splash-screen .word { color: #FFFFFF; font-family: 'Poppins', sans-serif; font-weight: 100; font-size: clamp(8rem, 15vw, 10rem); display: grid; grid-template-columns: auto auto; justify-items: center; line-height: 0.8; gap: 0.15em; text-shadow: 0 0 30px #bf00ff; direction: ltr; }
     .splash-screen .word span { opacity: 0; position: relative; }
     @keyframes letterAppear { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: scale(1); } }
-    .splash-screen .word span:nth-child(1) { animation: letterAppear 0.3s ease-out 0.05s forwards; }
-    .splash-screen .word span:nth-child(2) { animation: letterAppear 0.3s ease-out 0.15s forwards; }
-    .splash-screen .word span:nth-child(3) { animation: letterAppear 0.3s ease-out 0.25s forwards; }
-    .splash-screen .word span:nth-child(4) { animation: letterAppear 0.3s ease-out 0.30s forwards; }
+    .splash-screen .word span:nth-child(1) { animation: letterAppear 0.3s ease-out 0.0s forwards; }
+    .splash-screen .word span:nth-child(2) { animation: letterAppear 0.3s ease-out 0.1s forwards; }
+    .splash-screen .word span:nth-child(3) { animation: letterAppear 0.3s ease-out 0.2s forwards; }
+    .splash-screen .word span:nth-child(4) { animation: letterAppear 0.3s ease-out 0.3s forwards; }
 
     /* Connection Indicator */
     .conn-indicator { padding: 6px 0 0 0; height: 22px; display: flex; align-items: center; justify-content: center; transition: 0.3s; flex-shrink: 0; cursor: pointer; }
