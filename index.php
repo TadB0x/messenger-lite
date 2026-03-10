@@ -2615,9 +2615,9 @@ function createMsgNode(m, showSender, history){
     let sender='';
     if(showSender) sender=`<div class="msg-sender" onclick="if(ME!='${m.from_user}'){openChat('dm','${m.from_user}');switchTab('chats');}">${m.from_user}</div>`;
 
-    let txt=esc(m.message);
-    if(m.type=='image') txt=`<img src="${m.message.replace(/"/g, '&quot;')}" onclick="openLightbox(this.src)" onload="scrollToBottom(false)">`;
-    else if(m.type=='video') txt=`<video src="${m.message.replace(/"/g, '&quot;')}" controls style="max-width:100%;border-radius:8px"></video>`;
+    let txt;
+    if(m.type=='image') txt=`<img src="${m.message}" loading="lazy" onclick="openLightbox(this.src)" onload="scrollToBottom(false)">`;
+    else if(m.type=='video') txt=`<div class="vid-poster" id="vid-poster-${m.timestamp}" style="position:relative;max-width:100%;min-width:200px;height:150px;background:#000;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer"><div class="play-btn" style="width:48px;height:48px;font-size:24px;padding-left:4px">▶</div></div>`;
     else if(m.type=='audio') {
         let isVoice = !m.extra_data;
         let extra = '';
@@ -2635,7 +2635,7 @@ function createMsgNode(m, showSender, history){
             <audio src="${m.message}" style="display:none" onloadedmetadata="this.parentElement.querySelector('.audio-time').innerText=formatTime(this.duration)"></audio>
         </div>${!isVoice ? `<div style="font-size:0.75rem;opacity:0.8;margin-top:4px;margin-left:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px">🎵 ${esc(m.extra_data)}</div>` : ''}`;
     }
-    else if(m.type=='sticker') txt=`<img src="${m.message}" style="width:128px;height:128px;object-fit:contain">`;
+    else if(m.type=='sticker') txt=`<img src="${m.message}" loading="lazy" style="width:128px;height:128px;object-fit:contain">`;
     else if(m.type=='gif') txt=`<video src="${m.message}" autoplay loop muted playsinline style="max-width:100%;border-radius:8px;cursor:pointer" onclick="if(this.paused)this.play();else this.pause()"></video>`;
     else if(m.type=='file') {
         let fname = esc(m.extra_data || 'file');
@@ -2650,6 +2650,8 @@ function createMsgNode(m, showSender, history){
             <svg viewBox="0 0 24 24" width="20" fill="currentColor"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
             <span>${coords}</span>
         </a>`;
+    } else {
+        txt = esc(m.message);
     }
     
     let rep='';
@@ -2717,6 +2719,22 @@ function createMsgNode(m, showSender, history){
         
     };
     div.ondblclick=()=>{ sendReact(m.timestamp, '❤️'); };
+
+    if(m.type=='video') {
+        let ph = div.querySelector(`#vid-poster-${m.timestamp}`);
+        if(ph) {
+            ph.onclick = (e) => {
+                e.stopPropagation();
+                let v = document.createElement('video');
+                v.src = m.message;
+                v.controls = true;
+                v.style.maxWidth = '100%';
+                v.style.borderRadius = '8px';
+                v.autoplay = true;
+                ph.replaceWith(v);
+            };
+        }
+    }
     return div;
 }
 
