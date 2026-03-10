@@ -983,6 +983,14 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('?action=sw');
     @media (hover: hover) { .list-item:hover { background:rgba(255,255,255,0.1); } }
     .list-item:active { background:rgba(255,255,255,0.05); }
     .list-item.active { background:rgba(255,255,255,0.15); border-left:4px solid var(--accent); padding-left:11px; }
+    @media (min-width: 769px) {
+        .list-item[data-key="global"].active {
+            box-shadow: 0 0 15px #ffeb3b, inset 0 0 10px rgba(255, 235, 59, 0.2);
+            border-left: none;
+            padding-left: 15px;
+            z-index: 5;
+        }
+    }
     .avatar { width:40px; height:40px; border-radius:50%; background:#444; margin-right:12px; display:flex; align-items:center; justify-content:center; font-weight:bold; background-size:cover; flex-shrink:0; }
     
     .main-view { flex:1; display:flex; flex-direction:column; background:var(--bg); background-image:radial-gradient(var(--pattern) 1px, transparent 1px); background-size:20px 20px; position:relative; min-height:0; min-width:0; }
@@ -2324,7 +2332,7 @@ function updateListDOM(id, list, renderer) {
 }
 
 function renderDmItem(el, d, isUpdate) {
-    let isActive = S.id == d.u && S.type == 'dm';
+    let isActive = S.id == d.key && S.type == (d.type||'dm');
     if(!isUpdate) {
         el.onclick = () => openChat(d.type||'dm', d.key);
         el.oncontextmenu = (e) => onChatListContext(e, 'dm', d.u);
