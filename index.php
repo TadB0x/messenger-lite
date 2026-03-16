@@ -1002,7 +1002,7 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('?action=sw');
     .rail-btn svg { width:24px; height:24px; fill:currentColor; }
     .rail-badge { position:absolute; top:-2px; right:-2px; background:red; border-radius:50%; width:10px; height:10px; display:none; border:2px solid var(--rail); }
 
-    .nav-panel { width:280px; background:var(--panel); border-right:1px solid var(--border); display:flex; flex-direction:column; min-height:0; }
+    .nav-panel { width:clamp(280px, 30vw, 400px); background:var(--panel); border-right:1px solid var(--border); display:flex; flex-direction:column; min-height:0; }
     .nav-panel.full-width { width: auto; flex: 1; border-right: none; }
     .panel-header { padding:20px; font-weight:bold; font-size:1.2rem; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
     .list-area { flex:1; overflow-y:auto; overscroll-behavior-y: contain; }
@@ -1010,7 +1010,7 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('?action=sw');
     @media (hover: hover) { .list-item:hover { background:rgba(255,255,255,0.1); } }
     .list-item:active { background:rgba(255,255,255,0.05); }
     .list-item.active { background:rgba(255,255,255,0.15); border-left:4px solid var(--accent); padding-left:11px; }
-    @media (min-width: 769px) {
+    @media (min-width: 851px) {
         .list-item[data-key="global"].active {
             border: 2px solid #ffeb3b;
             border-radius: 10px;
@@ -1104,7 +1104,7 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('?action=sw');
     .ctx-reaction:hover { background:rgba(255,255,255,0.2); transform:scale(1.2); }
     .active-reaction { background: rgba(168, 85, 247, 0.3); border: 1px solid var(--accent); }
     .user-popup { position: fixed; z-index: 2000; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px; box-shadow: 0 5px 20px rgba(0,0,0,0.5); min-width: 200px; display:none; flex-direction:column; gap:10px; }
-    @media (max-width: 768px) {
+    @media (max-width: 850px) {
         .user-popup { bottom: 0; left: 0; width: 100%; border-radius: 16px 16px 0 0; border: none; border-top: 1px solid var(--border); animation: slideUp 0.2s; box-sizing: border-box; }
     }
     .ctx-item { padding:10px 15px; cursor:pointer; display:flex; align-items:center; gap:10px; }
@@ -1132,7 +1132,7 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('?action=sw');
     .lightbox-controls { position:absolute; top:15px; right:15px; display:flex; gap:15px; z-index:2001; }
     .lb-btn { width:40px; height:40px; background:rgba(255,255,255,0.2); border-radius:50%; display:flex; align-items:center; justify-content:center; color:#fff; cursor:pointer; backdrop-filter:blur(10px); transition:0.2s; }
     .lb-btn:hover { background:rgba(255,255,255,0.3); }
-    @media (max-width: 768px) {
+    @media (max-width: 850px) {
         .lightbox { background:#000; backdrop-filter:none; }
         .lightbox img { max-width:100%; max-height:100%; }
     }
@@ -1177,7 +1177,7 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('?action=sw');
     .gif-item { width: 100%; height: 100px; object-fit: cover; border-radius: 6px; cursor: pointer; }
     .emoji-search { padding: 8px; background: var(--bg); border: 1px solid var(--border); color: var(--text); width: 100%; box-sizing: border-box; border-radius: 4px; margin-bottom: 10px; }
 
-    @media (min-width: 769px) {
+    @media (min-width: 851px) {
         .main-view { flex-direction: row; }
         #chat-view { width: auto !important; flex: 1; }
         .emoji-drawer { width: 300px; border-left: 1px solid var(--border); height: 100%; position: relative; animation: slideLeft 0.2s ease-out; }
@@ -1185,7 +1185,7 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('?action=sw');
         @keyframes slideLeft { from { width: 0; opacity: 0; } to { width: 300px; opacity: 1; } }
         @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     }
-    @media (max-width: 768px) {
+    @media (max-width: 850px) {
         .emoji-drawer {
             position: absolute;
             bottom: 0; left: 0; width: 100%;
@@ -1198,7 +1198,7 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('?action=sw');
     @keyframes sequentialReplace { 0%, 100% { opacity: 0; transform: translateX(-50%) scale(0.95); } 15% { opacity: 1; transform: translateX(-50%) scale(1); } 30% { opacity: 1; transform: translateX(-50%) scale(1); } 45% { opacity: 0; transform: translateX(-50%) scale(0.95); } }
     @keyframes pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.3); opacity: 0.7; } }
 
-    @media (max-width: 768px) {
+    @media (max-width: 850px) {
         .app-container { flex-direction: column; }
         .nav-rail { 
             width: 100%; height: 60px;
@@ -1258,7 +1258,7 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('?action=sw');
         .ctx-reactions { padding: 20px 10px; gap: 15px; justify-content: center; }
         .ctx-reaction { font-size: 1.8rem; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 50%; width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; }
     }
-    @media (min-width: 769px) { .back-btn { display:none; } .mobile-only { display: none !important; } }
+    @media (min-width: 851px) { .back-btn { display:none; } .mobile-only { display: none !important; } }
 
     /* Splash Screen Main App */
     .splash-screen { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: #000000; z-index: 9999; display: flex; justify-content: center; align-items: center; pointer-events: none; }
@@ -1280,6 +1280,13 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('?action=sw');
     .status-connected .conn-text { display: none; }
     .light-mode .conn-more { color: #333; text-shadow: 0 0 10px rgba(168, 85, 247, 0.5); }
     @keyframes dots { 0% { content: '.'; } 33% { content: '..'; } 66% { content: '...'; } }
+
+    @media (pointer: coarse) {
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        .list-item { padding: 18px 15px; }
+        .msg { padding: 10px 14px; font-size: 1rem; }
+        .input-area { padding: 20px 15px; padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
+    }
 
     /* Observatory Styles */
     .market-list { padding:15px; }
@@ -2636,7 +2643,7 @@ async function openChat(t,i){
     document.getElementById('btn-call').style.display = (t=='dm') ? 'flex' : 'none';
     document.getElementById('input-box').style.visibility = canPost ? 'visible' : 'hidden';
     toggleMainBtn();
-    if(window.innerWidth > 768) setTimeout(()=>document.getElementById('txt').focus(), 50);
+    if(window.innerWidth > 850) setTimeout(()=>document.getElementById('txt').focus(), 50);
     
     if(t=='dm'){ let h=await get('dm',i); let last=h.filter(x=>x.from_user==i).pop(); if(last && last.timestamp>lastRead){ lastRead=last.timestamp; req('send',{to_user:i,type:'read',extra:last.timestamp}); } }
 }
@@ -2920,7 +2927,7 @@ function showContextMenu(e, type, data) {
     menu.innerHTML = html;
     menu.style.display = 'block';
     
-    if (window.innerWidth > 768) {
+    if (window.innerWidth > 850) {
         let x = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : 0);
         let y = e.clientY !== undefined ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : 0);
         if (x + menu.offsetWidth > window.innerWidth) x -= menu.offsetWidth;
@@ -2992,7 +2999,7 @@ async function viewReactionUser(e, user) {
     pop.innerHTML = html;
     pop.style.display = 'flex';
     
-    if(window.innerWidth > 768) {
+    if(window.innerWidth > 850) {
         let rect = e.target.getBoundingClientRect();
         let popH = pop.offsetHeight;
         let popW = pop.offsetWidth;
@@ -3092,7 +3099,7 @@ function enableNotifs(){
 }
 
 function handleAttClick(e) {
-    if(window.innerWidth > 768) {
+    if(window.innerWidth > 850) {
         pickMedia('file');
     } else {
         let m = document.getElementById('att-menu');
@@ -3867,19 +3874,19 @@ let btnEm = document.getElementById('btn-emoji');
 let drw = document.getElementById('emoji-drawer');
 
 btnEm.onmouseenter = () => {
-    if(window.innerWidth > 768 && !emojiPinned) {
+    if(window.innerWidth > 850 && !emojiPinned) {
         drw.style.display = 'flex';
         drw.classList.add('popover');
         switchEmojiTab(currentEmojiTab);
     }
 };
 btnEm.onmouseleave = () => {
-    if(window.innerWidth > 768 && !emojiPinned) {
+    if(window.innerWidth > 850 && !emojiPinned) {
         setTimeout(()=>{ if(!drw.matches(':hover')) { drw.style.display = 'none'; drw.classList.remove('popover'); } }, 100);
     }
 };
 drw.onmouseleave = () => {
-    if(window.innerWidth > 768 && !emojiPinned) {
+    if(window.innerWidth > 850 && !emojiPinned) {
         drw.style.display = 'none';
         drw.classList.remove('popover');
     }
@@ -3887,7 +3894,7 @@ drw.onmouseleave = () => {
 
 function toggleEmojiDrawer() {
     let d = document.getElementById('emoji-drawer');
-    if(window.innerWidth <= 768) {
+    if(window.innerWidth <= 850) {
         let wasVisible = d.style.display === 'flex';
         document.getElementById('att-menu').style.display = 'none';
         d.style.display = wasVisible ? 'none' : 'flex';
@@ -4105,18 +4112,18 @@ async function sendSticker(content, type='text') {
 let tSX=0, tSY=0, isDragging=false;
 const mv = document.getElementById('main-view');
 mv.addEventListener('touchstart', e => {
-    if(window.innerWidth > 768) return;
+    if(window.innerWidth > 850) return;
     tSX = e.touches[0].clientX; tSY = e.touches[0].clientY;
     isDragging = false; mv.style.transition = 'none';
 }, {passive:true});
 mv.addEventListener('touchmove', e => {
-    if(window.innerWidth > 768 || !mv.classList.contains('active')) return;
+    if(window.innerWidth > 850 || !mv.classList.contains('active')) return;
     let dx = e.touches[0].clientX - tSX, dy = e.touches[0].clientY - tSY;
     if(!isDragging && dx > 10 && Math.abs(dy) < Math.abs(dx) * 0.8) isDragging = true;
     if(isDragging) { if(e.cancelable) e.preventDefault(); mv.style.transform = `translateX(${Math.max(0, dx)}px)`; }
 }, {passive:false});
 mv.addEventListener('touchend', e => {
-    if(window.innerWidth > 768) return;
+    if(window.innerWidth > 850) return;
     mv.style.transition = '';
     if(isDragging) {
         if(e.changedTouches[0].clientX - tSX > 100) { closeChat(); mv.style.transform = ''; }
@@ -4131,7 +4138,7 @@ let tabSwipe = { startX:0, startY:0, current:null, target:null, active:false, wi
 const TABS_ORDER = ['chats', 'groups', 'channels', 'observatory', 'settings'];
 
 np.addEventListener('touchstart', e => {
-    if(window.innerWidth > 768) return;
+    if(window.innerWidth > 850) return;
     tabSwipe.startX = e.touches[0].clientX;
     tabSwipe.startY = e.touches[0].clientY;
     tabSwipe.active = false;
@@ -4142,7 +4149,7 @@ np.addEventListener('touchstart', e => {
 }, {passive:true});
 
 np.addEventListener('touchmove', e => {
-    if(window.innerWidth > 768 || !tabSwipe.current) return;
+    if(window.innerWidth > 850 || !tabSwipe.current) return;
     let dx = e.touches[0].clientX - tabSwipe.startX;
     let dy = e.touches[0].clientY - tabSwipe.startY;
     
@@ -4180,7 +4187,7 @@ np.addEventListener('touchmove', e => {
 }, {passive:false});
 
 np.addEventListener('touchend', e => {
-    if(window.innerWidth > 768 || !tabSwipe.current) return;
+    if(window.innerWidth > 850 || !tabSwipe.current) return;
     if(tabSwipe.active) {
         let dx = e.changedTouches[0].clientX - tabSwipe.startX;
         let threshold = tabSwipe.width * 0.25;
