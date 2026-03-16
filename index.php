@@ -3007,6 +3007,7 @@ async function ctxAction(act, arg) {
             if(t){
                 t.pinned=!t.pinned; await save(S.type,S.id,h); 
                 let el = document.getElementById('msg-' + m.timestamp);
+                if (el) updateMsgNodeInPlace(el, t);
                 if (el) el.replaceWith(createMsgNode(t, el.querySelector('.msg-sender') !== null, h));
             } 
         }
@@ -3356,6 +3357,7 @@ async function sendFile(fileToSend) {
                 delete m.pending; delete m.progress; await save(S.type, S.id, h); 
                 let el = document.getElementById('msg-' + ts);
                 if (el) el.replaceWith(createMsgNode(m, el.querySelector('.msg-sender') !== null, h));
+                if (el) updateMsgNodeInPlace(el, m);
             }
         }
     } catch(e) {
