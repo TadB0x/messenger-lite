@@ -2209,6 +2209,7 @@ function notify(id, text, type) {
     S.notifs.unshift({id, type, text, title: title, time:new Date()});
     updateNotifUI();
     let targetTab = type=='dm'?'chats':(type=='channel'?'channels':'groups');
+    let targetTab = (type=='dm' || type=='public') ? 'chats' : (type=='channel'?'channels':'groups');
     if(S.tab !== targetTab && document.getElementById('badge-' + targetTab)) {
         document.getElementById('badge-' + targetTab).style.display = 'block';
     }
@@ -2253,6 +2254,7 @@ function openFromNotif(idx) {
     updateNotifUI();
     toggleNotif(false);
     switchTab(n.type == 'dm' ? 'chats' : (n.type=='public'?'public':(n.type=='channel'?'channels':'groups')));
+    switchTab((n.type == 'dm' || n.type == 'public') ? 'chats' : (n.type=='channel'?'channels':'groups'));
     openChat(n.type, n.id);
 }
 
@@ -2583,6 +2585,10 @@ function updateListDOM(id, list, renderer) {
 
 function renderDmItem(el, d, isUpdate) {
     let isActive = S.id == d.key && S.type == (d.type||'dm');
+    
+    el.onclick = () => openChat(d.type||'dm', d.key);
+    el.oncontextmenu = (e) => onChatListContext(e, d.type||'dm', d.key);
+
     if(!isUpdate) {
         el.onclick = () => openChat(d.type||'dm', d.key);
         el.oncontextmenu = (e) => onChatListContext(e, 'dm', d.key);
@@ -2634,6 +2640,11 @@ function renderGroupItem(el, item, isUpdate) {
     let g = item.g;
     let isChan = g.category === 'channel';
     let isActive = S.id == g.id && S.type == (isChan ? 'channel' : 'group');
+    let t = isChan ? 'channel' : 'group';
+    
+    el.onclick = () => openChat(t, g.id);
+    el.oncontextmenu = (e) => onChatListContext(e, t, g.id);
+
     if(!isUpdate) {
         let t = isChan ? 'channel' : 'group';
         el.onclick = () => openChat(t, g.id);
@@ -3141,6 +3152,7 @@ async function ctxAction(act, arg) {
     } else if(c.type == 'chat_list') {
         let d = c.data;
         if(act=='open') { openChat(d.type, d.id); switchTab(d.type=='dm'?'chats':'groups'); }
+        if(act=='open') { openChat(d.type, d.id); switchTab((d.type=='dm'||d.type=='public')?'chats':(d.type=='channel'?'channels':'groups')); }
         else if(act=='clear') { if(confirm("Clear history?")) { await save(d.type, d.id, []); if(S.id==d.id) renderChat(); renderLists(); } }
         else if(act=='del_chat') { if(confirm("Delete chat?")) { await dbOp('readwrite', s=>s.delete(`mw_${d.type}_${d.id}`)); if(S.id==d.id) closeChat(); renderLists(); } }
     } else {
