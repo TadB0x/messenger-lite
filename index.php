@@ -1582,7 +1582,7 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('?action=sw');
 
         <div id="we-overlay" class="we-overlay">
             <svg viewBox="0 0 24 24" width="64" height="64" style="fill:var(--accent)"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-9-2c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6zm9 14H6V10h12v10zm-6-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z"/></svg>
-            <div class="we-status" id="we-status">Waiting for members...</div>
+            <div class="we-status" id="we-status">Generating keys...</div>
             <div style="margin-top:10px;color:#888;font-size:0.9rem">Do not leave this screen.</div>
         </div>
 
@@ -1727,7 +1727,7 @@ async function setSafeVideoSrc(videoEl, dataUri) {
     if(vidObserver) vidObserver.observe(videoEl);
 }
 
-let S = { tab:'chats', id:null, type:null, reply:null, ctx:null, dms:{}, groups:{}, online:[], profiles:{}, notifs:[], keys:{pub:null,priv:null}, e2ee:{}, we:{active:false, ready:[]}, scroll:{}, ackDms:[], groupCursors:{}, wsync:{peers:{}, dc:{}}, deviceId: localStorage.getItem('mw_did') || Math.random().toString(36).substr(2,9), stickers:[], gifs:[] };
+let S = { tab:'chats', id:null, type:null, reply:null, ctx:null, dms:{}, groups:{}, online:[], profiles:{}, notifs:[], keys:{pub:null,priv:null}, e2ee:{}, weSyncReqSent:{}, scroll:{}, ackDms:[], groupCursors:{}, wsync:{peers:{}, dc:{}}, deviceId: localStorage.getItem('mw_did') || Math.random().toString(36).substr(2,9), stickers:[], gifs:[] };
 localStorage.setItem('mw_did', S.deviceId);
 
 const TR = {
@@ -2174,8 +2174,6 @@ async function poll(){
                 }
                 continue; 
             }
-            if(m.type=='wencrypt_ready'){ handleWeReady(m); continue; }
-            if(m.type=='wencrypt_key'){ handleWeKey(m); continue; }
             if(m.type=='signal'){ onSignal(m); continue; }
             if(m.type=='enc'){ 
                 try{
@@ -2217,6 +2215,38 @@ async function poll(){
             let g = S.groups[m.group_id];
             let type = (g && g.category === 'channel') ? 'channel' : 'group';
             if(m.type=='delete'){ await removeMsg(type,m.group_id,m.extra_data); continue; }
+            if(m.type=='wencrypt_key'){ handleWeKey(m); continue; }
+            if(m.type=='signal') { 
+                if (m.extra_data === 'group_key_req' && m.from_user !== ME) {
+                    if (S.e2ee[m.group_id]) {
+                        setTimeout(async () => {
+                            try {
+                                let r = await fetch('?action=get_profile&u=' + m.from_user);
+                                let pd = await r.json();
+                                if(pd.public_key) {
+                                    let gkExp = await window.crypto.subtle.exportKey("jwk", S.e2ee[m.group_id]);
+                                    let theirPub = await window.crypto.subtle.importKey("jwk", JSON.parse(pd.public_key), {name:"ECDH",namedCurve:"P-256"}, true, []);
+                                    let ephem = await window.crypto.subtle.generateKey({name:"ECDH",namedCurve:"P-256"}, true, ["deriveKey"]);
+                                    let sessKey = await window.crypto.subtle.deriveKey({name:"ECDH",public:theirPub}, ephem.privateKey, {name:"AES-GCM",length:256}, false, ["encrypt"]);
+                                    
+                                    let iv = window.crypto.getRandomValues(new Uint8Array(12));
+                                    let buf = await window.crypto.subtle.encrypt({name:"AES-GCM",iv:iv}, sessKey, new TextEncoder().encode(JSON.stringify(gkExp)));
+                                    
+                                    let b=''; new Uint8Array(buf).forEach(x=>b+=String.fromCharCode(x));
+                                    let i=''; iv.forEach(x=>i+=String.fromCharCode(x));
+                                    let p = await window.crypto.subtle.exportKey("jwk", ephem.publicKey);
+                                    
+                                    let payload = {};
+                                    payload[m.from_user] = JSON.stringify({ c: btoa(b), i: btoa(i), p: p });
+                                    
+                                    req('send', {group_id:m.group_id, type:'wencrypt_key', message:JSON.stringify(payload)});
+                                }
+                            } catch(e) { console.error("Failed to answer group key req", e); }
+                        }, Math.random() * 5000);
+                    }
+                }
+                continue; 
+            }
             if(m.type=='enc') {
                 try {
                     if(S.e2ee[m.group_id]) {
@@ -2231,8 +2261,15 @@ async function poll(){
                             m.type = 'text';
                         }
                     } else {
-                        m.message="⚠️ [Encrypted] Missing group key. You may need to be re-invited to WEncrypt.";
+                        m.c_cache = m.message;
+                        m.message="⚠️ [Encrypted] Missing group key. Synchronizing...";
                         m.type='text';
+                        m.needs_decryption = true;
+                        
+                        if (!S.weSyncReqSent[m.group_id] || Date.now() - S.weSyncReqSent[m.group_id] > 10000) {
+                            req('send', {group_id: m.group_id, type: 'signal', extra: 'group_key_req'});
+                            S.weSyncReqSent[m.group_id] = Date.now();
+                        }
                     }
                 } catch(e) {
                     m.message="⚠️ [Encrypted] Decryption failed.";
@@ -2530,39 +2567,30 @@ async function dec(t, id, c, extra_data){
 
 // --- WENCRYPT (GROUP E2EE) ---
 async function startWEncrypt(){
-    if(!confirm("WEncrypt cannot be disabled once started. All members must be online. Proceed?")) return;
-    S.we.active = true;
-    S.we.ready = [];
-    document.getElementById('we-overlay').style.display='flex';
-    req('send', {group_id:S.id, type:'wencrypt_ready', message:'READY'});
-}
-
-function handleWeReady(m){
-    if(S.type!='group' || S.id!=m.group_id || !S.we.active) return;
-    if(!S.we.ready.includes(m.from_user)) S.we.ready.push(m.from_user);
+    if(!confirm("Enable WEncrypt for this group? (Offline members will automatically sync the key when they come online)")) return;
     
-    // Check if we are owner and everyone is ready
-    // We need total member count. We can get it from get_group_details cache or fetch
+    document.getElementById('we-overlay').style.display='flex';
+    document.getElementById('we-status').innerText = "Generating keys...";
+    
     fetch('?action=get_group_details&id='+S.id).then(r=>r.json()).then(async d=>{
-        let total = d.members.length;
-        document.getElementById('we-status').innerText = `Waiting for members... (${S.we.ready.length}/${total})`;
+        if(!d.is_owner) {
+            document.getElementById('we-overlay').style.display='none';
+            return;
+        }
         
-        if(d.is_owner && S.we.ready.length >= total){
-            // Generate Group Key
-            let gk = await window.crypto.subtle.generateKey({name:"AES-GCM",length:256}, true, ["encrypt","decrypt"]);
-            let gkExp = await window.crypto.subtle.exportKey("jwk", gk);
-            let payload = {};
+        let gk = await window.crypto.subtle.generateKey({name:"AES-GCM",length:256}, true, ["encrypt","decrypt"]);
+        let gkExp = await window.crypto.subtle.exportKey("jwk", gk);
+        let payload = {};
+        
+        for(let mem of d.members){
+            if(mem.username == ME) { payload[ME] = JSON.stringify(gkExp); continue; }
+            if(!mem.public_key) continue;
             
-            for(let mem of d.members){
-                if(mem.username == ME) { payload[ME] = JSON.stringify(gkExp); continue; }
-                if(!mem.public_key) continue; // Skip users without keys
-                
-                // Derive session key for this user using Ephemeral ECDH
+            try {
                 let theirPub = await window.crypto.subtle.importKey("jwk", JSON.parse(mem.public_key), {name:"ECDH",namedCurve:"P-256"}, true, []);
                 let ephem = await window.crypto.subtle.generateKey({name:"ECDH",namedCurve:"P-256"}, true, ["deriveKey"]);
                 let sessKey = await window.crypto.subtle.deriveKey({name:"ECDH",public:theirPub}, ephem.privateKey, {name:"AES-GCM",length:256}, false, ["encrypt"]);
                 
-                // Encrypt the Group Key with Session Key
                 let iv = window.crypto.getRandomValues(new Uint8Array(12));
                 let buf = await window.crypto.subtle.encrypt({name:"AES-GCM",iv:iv}, sessKey, new TextEncoder().encode(JSON.stringify(gkExp)));
                 
@@ -2571,31 +2599,71 @@ function handleWeReady(m){
                 let p = await window.crypto.subtle.exportKey("jwk", ephem.publicKey);
                 
                 payload[mem.username] = JSON.stringify({ c: btoa(b), i: btoa(i), p: p });
+            } catch(err) {
+                console.error("Failed to encrypt for user", mem.username, err);
             }
-            req('send', {group_id:S.id, type:'wencrypt_key', message:JSON.stringify(payload)});
         }
+        req('send', {group_id:S.id, type:'wencrypt_key', message:JSON.stringify(payload)});
+        
+        S.e2ee[S.id] = gk;
+        localStorage.setItem('mw_grp_sess_' + S.id, JSON.stringify(gkExp));
+        updateE2EEUI();
+        
+        document.getElementById('we-overlay').style.display='none';
+        alertModal("WEncrypt", "Group is now encrypted.");
     });
 }
 
 async function handleWeKey(m){
-    if(S.type!='group' || S.id!=m.group_id) return;
-    let payload = JSON.parse(m.message);
-    if(payload[ME]){
-        // If owner sent it to themselves (unencrypted) or encrypted
+    let payload;
+    try { payload = JSON.parse(m.message); } catch(e){return;}
+    if(payload[ME] && !S.e2ee[m.group_id]){
         let kStr = payload[ME];
         if(m.from_user != ME){
-            let encData = JSON.parse(kStr);
-            let ephemPub = await window.crypto.subtle.importKey("jwk", encData.p, {name:"ECDH",namedCurve:"P-256"}, false, []);
-            let sessKey = await window.crypto.subtle.deriveKey({name:"ECDH",public:ephemPub}, S.keys.priv, {name:"AES-GCM",length:256}, false, ["decrypt"]);
-            let d = await window.crypto.subtle.decrypt({name:"AES-GCM",iv:Uint8Array.from(atob(encData.i),c=>c.charCodeAt(0))}, sessKey, Uint8Array.from(atob(encData.c),c=>c.charCodeAt(0)));
-            kStr = new TextDecoder().decode(d);
+            try {
+                let encData = JSON.parse(kStr);
+                let ephemPub = await window.crypto.subtle.importKey("jwk", encData.p, {name:"ECDH",namedCurve:"P-256"}, false, []);
+                let sessKey = await window.crypto.subtle.deriveKey({name:"ECDH",public:ephemPub}, S.keys.priv, {name:"AES-GCM",length:256}, false, ["decrypt"]);
+                let d = await window.crypto.subtle.decrypt({name:"AES-GCM",iv:Uint8Array.from(atob(encData.i),c=>c.charCodeAt(0))}, sessKey, Uint8Array.from(atob(encData.c),c=>c.charCodeAt(0)));
+                kStr = new TextDecoder().decode(d);
+            } catch(e) { console.error("Failed to decrypt group key", e); return; }
         }
-        let gk = await window.crypto.subtle.importKey("jwk", JSON.parse(kStr), {name:"AES-GCM",length:256}, false, ["encrypt","decrypt"]);
-        S.e2ee[S.id] = gk;
-        localStorage.setItem('mw_grp_sess_' + S.id, JSON.stringify(await window.crypto.subtle.exportKey("jwk", gk)));
-        S.we.active = false;
-        document.getElementById('we-overlay').style.display='none';
-        alertModal("WEncrypt", "Group is now encrypted.");
+        try {
+            let gk = await window.crypto.subtle.importKey("jwk", JSON.parse(kStr), {name:"AES-GCM",length:256}, false, ["encrypt","decrypt"]);
+            S.e2ee[m.group_id] = gk;
+            localStorage.setItem('mw_grp_sess_' + m.group_id, kStr);
+            
+            let h = await get('group', m.group_id);
+            let changed = false;
+            for(let i=0; i<h.length; i++) {
+                if(h[i].needs_decryption || (h[i].message && h[i].message.includes("Missing group key"))) {
+                    try {
+                        let ciphertext = h[i].c_cache || h[i].message;
+                        let decrypted = await dec('group', m.group_id, ciphertext, h[i].extra_data);
+                        if (decrypted.startsWith('{"_mw_enc":')) {
+                            let parsed = JSON.parse(decrypted);
+                            h[i].message = parsed.msg;
+                            h[i].type = parsed.type;
+                            h[i].extra_data = parsed.extra;
+                        } else {
+                            h[i].message = decrypted;
+                            h[i].type = 'text';
+                        }
+                        delete h[i].needs_decryption;
+                        delete h[i].c_cache;
+                        changed = true;
+                    } catch(e) {}
+                }
+            }
+            if(changed) {
+                await save('group', m.group_id, h);
+                if(S.id == m.group_id && S.type == 'group') renderChat();
+                renderLists();
+            }
+            
+            if(S.id == m.group_id) updateE2EEUI();
+            showToast("WEncrypt key synced!");
+        } catch(e) { console.error("Failed to import group key", e); }
     }
 }
 
