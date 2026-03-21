@@ -3741,7 +3741,6 @@ async function sendFile(fileToSend) {
                     }
                 }
             }
-        }
 }
 
 async function handleAvUpload(inp) {
