@@ -2208,7 +2208,6 @@ function notify(id, text, type) {
     let title = type=='dm'?id:(type=='public'?'Public Chat':(S.groups[id]?S.groups[id].name:(type=='channel'?'Channel':'Group')));
     S.notifs.unshift({id, type, text, title: title, time:new Date()});
     updateNotifUI();
-    let targetTab = type=='dm'?'chats':(type=='channel'?'channels':'groups');
     let targetTab = (type=='dm' || type=='public') ? 'chats' : (type=='channel'?'channels':'groups');
     if(S.tab !== targetTab && document.getElementById('badge-' + targetTab)) {
         document.getElementById('badge-' + targetTab).style.display = 'block';
@@ -2253,7 +2252,6 @@ function openFromNotif(idx) {
     S.notifs.splice(idx, 1);
     updateNotifUI();
     toggleNotif(false);
-    switchTab(n.type == 'dm' ? 'chats' : (n.type=='public'?'public':(n.type=='channel'?'channels':'groups')));
     switchTab((n.type == 'dm' || n.type == 'public') ? 'chats' : (n.type=='channel'?'channels':'groups'));
     openChat(n.type, n.id);
 }
@@ -3151,7 +3149,6 @@ async function ctxAction(act, arg) {
         else if(act=='delete') { if(m.from_user!=ME)return; S.reply=m.timestamp; await deleteMsg(); }
     } else if(c.type == 'chat_list') {
         let d = c.data;
-        if(act=='open') { openChat(d.type, d.id); switchTab(d.type=='dm'?'chats':'groups'); }
         if(act=='open') { openChat(d.type, d.id); switchTab((d.type=='dm'||d.type=='public')?'chats':(d.type=='channel'?'channels':'groups')); }
         else if(act=='clear') { if(confirm("Clear history?")) { await save(d.type, d.id, []); if(S.id==d.id) renderChat(); renderLists(); } }
         else if(act=='del_chat') { if(confirm("Delete chat?")) { await dbOp('readwrite', s=>s.delete(`mw_${d.type}_${d.id}`)); if(S.id==d.id) closeChat(); renderLists(); } }
