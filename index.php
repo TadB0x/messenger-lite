@@ -1702,6 +1702,25 @@ const vidObserver = window.IntersectionObserver ? new IntersectionObserver((entr
     });
 }, { threshold: 0.01 }) : null;
 
+function ab2b64(buf) {
+    let binary = '';
+    let bytes = new Uint8Array(buf);
+    let len = bytes.byteLength;
+    for (let i = 0; i < len; i += 32768) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 32768));
+    }
+    return window.btoa(binary);
+}
+function b642ab(base64) {
+    let str = window.atob(base64);
+    let len = str.length;
+    let bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+        bytes[i] = str.charCodeAt(i);
+    }
+    return bytes;
+}
+
 async function setSafeVideoSrc(videoEl, dataUri) {
     try {
         let blob = await (await fetch(dataUri)).blob();
@@ -2165,11 +2184,24 @@ async function poll(){
             if(m.type=='enc'){ 
                 try{
                     if(!S.e2ee[m.from_user]) await ensureE2EE(m.from_user);
-                    m.message=await dec('dm', m.from_user, m.message, m.extra_data);
-                    m.type='text';
+                    let decrypted = await dec('dm', m.from_user, m.message, m.extra_data);
+                    if (decrypted.startsWith('{"_mw_enc":')) {
+                        let parsed = JSON.parse(decrypted);
+                        m.message = parsed.msg;
+                        m.type = parsed.type;
+                        m.extra_data = parsed.extra;
+                    } else {
+                        m.message = decrypted;
+                        m.type = 'text';
+                    }
                 }catch(e){
-                    m.message="⚠️ [Encrypted] Decryption failed. If you recently changed devices, tell the sender to tap the Lock icon to refresh keys.";
+                    m.message="⚠️ [Encrypted] Decryption failed. Keys might be stale. Requesting new keys automatically...";
                     m.type='text';
+                    if(!S.keyRefreshSent) S.keyRefreshSent = {};
+                    if(!S.keyRefreshSent[m.from_user] || Date.now() - S.keyRefreshSent[m.from_user] > 60000) {
+                        req('send', {to_user: m.from_user, type: 'signal', extra: 'key_refresh_req'});
+                        S.keyRefreshSent[m.from_user] = Date.now();
+                    }
                 } 
             }
             await store('dm',m.from_user,m);
@@ -2192,8 +2224,16 @@ async function poll(){
             if(m.type=='enc') {
                 try {
                     if(S.e2ee[m.group_id]) {
-                        m.message=await dec('group', m.group_id, m.message, m.extra_data);
-                        m.type='text';
+                        let decrypted = await dec('group', m.group_id, m.message, m.extra_data);
+                        if (decrypted.startsWith('{"_mw_enc":')) {
+                            let parsed = JSON.parse(decrypted);
+                            m.message = parsed.msg;
+                            m.type = parsed.type;
+                            m.extra_data = parsed.extra;
+                        } else {
+                            m.message = decrypted;
+                            m.type = 'text';
+                        }
                     } else {
                         m.message="⚠️ [Encrypted] Missing group key. You may need to be re-invited to WEncrypt.";
                         m.type='text';
@@ -2445,19 +2485,14 @@ async function enc(t, id, txt){
         let iv=window.crypto.getRandomValues(new Uint8Array(12));
         let buf=await window.crypto.subtle.encrypt({name:"AES-GCM",iv:iv}, derived, new TextEncoder().encode(txt));
         
-        let b=''; new Uint8Array(buf).forEach(x=>b+=String.fromCharCode(x));
-        let i=''; iv.forEach(x=>i+=String.fromCharCode(x));
         let p = await window.crypto.subtle.exportKey("jwk", ephem.publicKey);
-        
-        return {c:btoa(b), extra: JSON.stringify({ i: btoa(i), p: p })};
+        return {c:ab2b64(buf), extra: JSON.stringify({ i: ab2b64(iv), p: p })};
     } else if (t === 'group') {
         let gk = S.e2ee[id];
         let iv=window.crypto.getRandomValues(new Uint8Array(12));
         let buf=await window.crypto.subtle.encrypt({name:"AES-GCM",iv:iv}, gk, new TextEncoder().encode(txt));
         
-        let b=''; new Uint8Array(buf).forEach(x=>b+=String.fromCharCode(x));
-        let i=''; iv.forEach(x=>i+=String.fromCharCode(x));
-        return {c:btoa(b), extra: btoa(i)};
+        return {c:ab2b64(buf), extra: ab2b64(iv)};
     }
 }
 async function dec(t, id, c, extra_data){
@@ -2472,17 +2507,17 @@ async function dec(t, id, c, extra_data){
         if (isLegacy) {
             let fk = S.e2ee[id];
             let legacyKey = await window.crypto.subtle.deriveKey({name:"ECDH",public:fk}, S.keys.priv, {name:"AES-GCM",length:256}, false, ["decrypt"]);
-            let d=await window.crypto.subtle.decrypt({name:"AES-GCM",iv:Uint8Array.from(atob(extra_data),ch=>ch.charCodeAt(0))}, legacyKey, Uint8Array.from(atob(c),ch=>ch.charCodeAt(0)));
+            let d=await window.crypto.subtle.decrypt({name:"AES-GCM",iv:b642ab(extra_data)}, legacyKey, b642ab(c));
             return new TextDecoder().decode(d);
         } else {
             let ephemPub = await window.crypto.subtle.importKey("jwk", p_jwk, {name:"ECDH",namedCurve:"P-256"}, false, []);
             let derived = await window.crypto.subtle.deriveKey({name:"ECDH",public:ephemPub}, S.keys.priv, {name:"AES-GCM",length:256}, false, ["decrypt"]);
-            let d=await window.crypto.subtle.decrypt({name:"AES-GCM",iv:Uint8Array.from(atob(i_b64),ch=>ch.charCodeAt(0))}, derived, Uint8Array.from(atob(c),ch=>ch.charCodeAt(0)));
+            let d=await window.crypto.subtle.decrypt({name:"AES-GCM",iv:b642ab(i_b64)}, derived, b642ab(c));
             return new TextDecoder().decode(d);
         }
     } else if (t === 'group') {
         let gk = S.e2ee[id];
-        let d=await window.crypto.subtle.decrypt({name:"AES-GCM",iv:Uint8Array.from(atob(extra_data),ch=>ch.charCodeAt(0))}, gk, Uint8Array.from(atob(c),ch=>ch.charCodeAt(0)));
+        let d=await window.crypto.subtle.decrypt({name:"AES-GCM",iv:b642ab(extra_data)}, gk, b642ab(c));
         return new TextDecoder().decode(d);
     }
 }
@@ -2824,7 +2859,6 @@ async function renderLists(){
                 if(last.length>30)last=last.substring(0,30)+'...';
                 let ou=S.online.find(x=>x.username==u);
                 let prof = S.profiles[u];
-                let av = (ou && ou.avatar) ? ou.avatar : (prof ? prof.avatar : '');
                 dms.push({key: u, u: displayName, last, av, ou, lock, ts: lastMsg ? lastMsg.timestamp : 0});
             }
         }
@@ -3156,7 +3190,8 @@ async function send(){
 
     if(S.e2ee[S.id] && (S.type == 'dm' || S.type == 'group')){
         try {
-            let e=await enc(S.type, S.id, txt);
+            let innerPayload = JSON.stringify({ _mw_enc: true, type: 'text', msg: txt, extra: null });
+            let e=await enc(S.type, S.id, innerPayload);
             load.message=e.c; load.extra=e.extra; load.type='enc';
         } catch(e){ console.error("Encryption failed, sending plain", e); }
     }
@@ -3425,7 +3460,19 @@ function sendLocation() {
         let ts = Math.floor(Date.now()/1000);
         let ld = {message: coords, type: 'location', timestamp: ts};
         if(S.type=='dm') ld.to_user=S.id; else if(S.type=='group'||S.type=='channel') ld.group_id=S.id; else ld.group_id=-1;
-        req('send', ld);
+        
+        if (S.e2ee[S.id] && (S.type == 'dm' || S.type == 'group')) {
+            try {
+                let innerPayload = JSON.stringify({ _mw_enc: true, type: 'location', msg: coords, extra: null });
+                enc(S.type, S.id, innerPayload).then(e => {
+                    ld.message = e.c; ld.extra = e.extra; ld.type = 'enc';
+                    req('send', ld);
+                }).catch(err => req('send', ld)); 
+            } catch(e) {}
+        } else {
+            req('send', ld);
+        }
+        
         store(S.type,S.id,{from_user:ME,message:coords,type:'location',timestamp:ts});
         scrollToBottom(true);
         document.getElementById('att-menu').style.display='none';
@@ -3544,86 +3591,150 @@ async function sendFile(fileToSend) {
             if (fileToSend.type.startsWith('image/')) type = 'image';
             else if (fileToSend.type.startsWith('video/')) type = 'video';
             else if (fileToSend.type.startsWith('audio/')) type = 'audio';
-            await store(S.type,S.id,{from_user:ME,message:r.result,type:type,timestamp:ts,extra_data:fileToSend.name, reply_to_id:replyId, pending:true, progress: 0});
+            let dataUrl = r.result;
+            await store(S.type,S.id,{from_user:ME,message:dataUrl,type:type,timestamp:ts,extra_data:fileToSend.name, reply_to_id:replyId, pending:true, progress: 0});
             scrollToBottom(true);
+            
+            if (S.e2ee[S.id] && (S.type == 'dm' || S.type == 'group')) {
+                try {
+                    let innerPayload = JSON.stringify({ _mw_enc: true, type: type, msg: dataUrl, extra: fileToSend.name });
+                    let e = await enc(S.type, S.id, innerPayload);
+                    let load = { message: e.c, extra: e.extra, type: 'enc', timestamp: ts };
+                    if(replyId) load.reply_to = replyId;
+                    if(S.type=='dm') load.to_user=S.id; else if(S.type=='group'||S.type=='channel') load.group_id=S.id; else load.group_id=-1;
+                    
+                    let xhr = new XMLHttpRequest();
+                    xhr.open('POST', '?action=send');
+                    xhr.setRequestHeader('Content-Type', 'application/json');
+                    xhr.setRequestHeader('X-CSRF-Token', CSRF_TOKEN);
+                    
+                    xhr.upload.onprogress = (e) => {
+                        if (e.lengthComputable) {
+                            let pct = Math.round((e.loaded / e.total) * 100);
+                            let msgNode = document.getElementById('msg-' + ts);
+                            if(msgNode) {
+                                let statNode = msgNode.querySelector('.msg-pending-stat');
+                                if(statNode) statNode.innerText = pct === 100 ? 'Processing...' : pct + '%';
+                                msgNode.dataset.progress = pct;
+                            }
+                        }
+                    };
+                    
+                    xhr.onload = async () => {
+                        endProg();
+                        let h = await get(S.type, S.id);
+                        let m = h.find(x => x.timestamp == ts && x.extra_data == fileToSend.name);
+                        if(xhr.status === 200) {
+                            let d;
+                            try { d = JSON.parse(xhr.responseText); } catch(err) { d = {status:'error'}; }
+                            if(d.status === 'success') {
+                                if(m && m.pending) { 
+                                    delete m.pending; delete m.progress; await save(S.type, S.id, h); 
+                                    let el = document.getElementById('msg-' + ts);
+                                    if (el) el.replaceWith(createMsgNode(m, el.querySelector('.msg-sender') !== null, h));
+                                }
+                            } else {
+                                if(m && m.pending) { alertModal('Error', d.message||'Encrypted upload failed'); let idx = h.indexOf(m); if(idx!=-1) { h.splice(idx, 1); await save(S.type, S.id, h); let el = document.getElementById('msg-' + ts); if(el) el.remove(); } }
+                            }
+                        } else {
+                            if(m && m.pending) { alertModal('Error', 'HTTP '+xhr.status); let idx = h.indexOf(m); if(idx!=-1) { h.splice(idx, 1); await save(S.type, S.id, h); let el = document.getElementById('msg-' + ts); if(el) el.remove(); } }
+                        }
+                    };
+                    xhr.onerror = async () => {
+                        endProg();
+                        let h = await get(S.type, S.id);
+                        let m = h.find(x => x.timestamp == ts && x.extra_data == fileToSend.name);
+                        if(m && m.pending) { alertModal('Error', 'Network error during upload'); let idx = h.indexOf(m); if(idx!=-1) { h.splice(idx, 1); await save(S.type, S.id, h); let el = document.getElementById('msg-' + ts); if(el) el.remove(); } }
+                    };
+                    xhr.send(JSON.stringify(load));
+                } catch(err) {
+                    endProg();
+                    console.error("Encryption failed", err);
+                    alertModal('Error', 'File encryption failed. It might be too large for local memory.');
+                    let h = await get(S.type, S.id);
+                    let m = h.find(x => x.timestamp == ts && x.extra_data == fileToSend.name);
+                    if(m && m.pending) { let idx = h.indexOf(m); if(idx!=-1) { h.splice(idx, 1); await save(S.type, S.id, h); let el = document.getElementById('msg-' + ts); if(el) el.remove(); } }
+                }
+            } else {
             resolve();
         };
         r.readAsDataURL(fileToSend);
     });
 
-    let fd = new FormData();
-    fd.append('file', fileToSend);
-    fd.append('timestamp', ts);
-    if(replyId) fd.append('reply_to', replyId);
-    if(S.type=='dm') fd.append('to_user', S.id);
-    else if(S.type=='group'||S.type=='channel') fd.append('group_id', S.id);
-    else fd.append('group_id', -1);
+            let fd = new FormData();
+            fd.append('file', fileToSend);
+            fd.append('timestamp', ts);
+            if(replyId) fd.append('reply_to', replyId);
+            if(S.type=='dm') fd.append('to_user', S.id);
+            else if(S.type=='group'||S.type=='channel') fd.append('group_id', S.id);
+            else fd.append('group_id', -1);
 
-    try {
-        let d = await new Promise((resolve, reject) => {
-            let xhr = new XMLHttpRequest();
-            xhr.open('POST', '?action=upload_msg');
-            xhr.setRequestHeader('X-CSRF-Token', CSRF_TOKEN);
-            
-            xhr.upload.onprogress = (e) => {
-                if (e.lengthComputable) {
-                    let pct = Math.round((e.loaded / e.total) * 100);
-                    let msgNode = document.getElementById('msg-' + ts);
-                    if(msgNode) {
-                        let statNode = msgNode.querySelector('.msg-pending-stat');
-                        if(statNode) statNode.innerText = pct === 100 ? 'Processing...' : pct + '%';
-                        msgNode.dataset.progress = pct;
+            try {
+                let d = await new Promise((resolve, reject) => {
+                    let xhr = new XMLHttpRequest();
+                    xhr.open('POST', '?action=upload_msg');
+                    xhr.setRequestHeader('X-CSRF-Token', CSRF_TOKEN);
+                    
+                    xhr.upload.onprogress = (e) => {
+                        if (e.lengthComputable) {
+                            let pct = Math.round((e.loaded / e.total) * 100);
+                            let msgNode = document.getElementById('msg-' + ts);
+                            if(msgNode) {
+                                let statNode = msgNode.querySelector('.msg-pending-stat');
+                                if(statNode) statNode.innerText = pct === 100 ? 'Processing...' : pct + '%';
+                                msgNode.dataset.progress = pct;
+                            }
+                        }
+                    };
+                    
+                    xhr.onload = () => {
+                        if(xhr.status === 200) {
+                            try { 
+                                let text = xhr.responseText;
+                                let match = text.match(/\{[\s\S]*\}/);
+                                resolve(JSON.parse(match ? match[0] : text)); 
+                            } catch(err) { reject(err); }
+                        } else reject(new Error('HTTP ' + xhr.status));
+                    };
+                    xhr.onerror = () => reject(new Error('Network Error'));
+                    xhr.send(fd);
+                });
+                endProg();
+                let h = await get(S.type, S.id);
+                let m = h.find(x => x.timestamp == ts && x.extra_data == fileToSend.name);
+                if(d.status!='success') {
+                    if(m && m.pending) {
+                        alertModal('Error', d.message||'Upload failed');
+                        let idx = h.indexOf(m);
+                        if(idx!=-1) { 
+                            h.splice(idx, 1); await save(S.type, S.id, h); 
+                            let el = document.getElementById('msg-' + ts);
+                            if (el) el.remove();
+                        }
+                    }
+                } else {
+                    if(m && m.pending) { 
+                        delete m.pending; delete m.progress; await save(S.type, S.id, h); 
+                        let el = document.getElementById('msg-' + ts);
+                        if (el) el.replaceWith(createMsgNode(m, el.querySelector('.msg-sender') !== null, h));
                     }
                 }
-            };
-            
-            xhr.onload = () => {
-                if(xhr.status === 200) {
-                    try { 
-                        let text = xhr.responseText;
-                        let match = text.match(/\{[\s\S]*\}/);
-                        resolve(JSON.parse(match ? match[0] : text)); 
-                    } catch(err) { reject(err); }
-                } else reject(new Error('HTTP ' + xhr.status));
-            };
-            xhr.onerror = () => reject(new Error('Network Error'));
-            xhr.send(fd);
-        });
-        endProg();
-        let h = await get(S.type, S.id);
-        let m = h.find(x => x.timestamp == ts && x.extra_data == fileToSend.name);
-        if(d.status!='success') {
-            if(m && m.pending) {
-                alertModal('Error', d.message||'Upload failed');
-                let idx = h.indexOf(m);
-                if(idx!=-1) { 
-                    h.splice(idx, 1); await save(S.type, S.id, h); 
-                    let el = document.getElementById('msg-' + ts);
-                    if (el) el.remove();
+            } catch(e) {
+                endProg();
+                console.error(e);
+                let h = await get(S.type, S.id);
+                let m = h.find(x => x.timestamp == ts && x.extra_data == fileToSend.name);
+                if(m && m.pending) {
+                    alertModal('Error', 'Upload failed or timed out.');
+                    let idx = h.indexOf(m);
+                    if(idx!=-1) { 
+                        h.splice(idx, 1); await save(S.type, S.id, h); 
+                        let el = document.getElementById('msg-' + ts);
+                        if (el) el.remove();
+                    }
                 }
             }
-        } else {
-            if(m && m.pending) { 
-                delete m.pending; delete m.progress; await save(S.type, S.id, h); 
-                let el = document.getElementById('msg-' + ts);
-                if (el) el.replaceWith(createMsgNode(m, el.querySelector('.msg-sender') !== null, h));
-            }
         }
-    } catch(e) {
-        endProg();
-        console.error(e);
-        let h = await get(S.type, S.id);
-        let m = h.find(x => x.timestamp == ts && x.extra_data == fileToSend.name);
-        if(m && m.pending) {
-            alertModal('Error', 'Upload failed or timed out.');
-            let idx = h.indexOf(m);
-            if(idx!=-1) { 
-                h.splice(idx, 1); await save(S.type, S.id, h); 
-                let el = document.getElementById('msg-' + ts);
-                if (el) el.remove();
-            }
-        }
-    }
 }
 
 async function handleAvUpload(inp) {
@@ -3844,7 +3955,34 @@ function stopRec(send){
             let r=new FileReader();
             r.onload=async ()=>{ 
                 let ts=Math.floor(Date.now()/1000);
-                let ld={message:r.result,type:'audio',timestamp:ts}; if(S.type=='dm')ld.to_user=S.id; else if(S.type=='group'||S.type=='channel') ld.group_id=S.id; else if(S.type=='public') ld.group_id=-1; req('send',ld); await store(S.type,S.id,{from_user:ME,message:r.result,type:'audio',timestamp:ts}); 
+                let msgObj = {from_user:ME,message:r.result,type:'audio',timestamp:ts, pending: true};
+                await store(S.type,S.id,msgObj); 
+                scrollToBottom(true);
+                
+                let load = {message:r.result,type:'audio',timestamp:ts}; 
+                if(S.type=='dm')load.to_user=S.id; else if(S.type=='group'||S.type=='channel') load.group_id=S.id; else if(S.type=='public') load.group_id=-1; 
+
+                if (S.e2ee[S.id] && (S.type == 'dm' || S.type == 'group')) {
+                    try {
+                        let innerPayload = JSON.stringify({ _mw_enc: true, type: 'audio', msg: r.result, extra: null });
+                        let e = await enc(S.type, S.id, innerPayload);
+                        load.message = e.c; load.extra = e.extra; load.type = 'enc';
+                    } catch(err) { console.error("Encryption failed", err); }
+                }
+
+                try {
+                    let res = await req('send', load);
+                    let d = await res.json();
+                    if(d.status === 'success') {
+                        let h = await get(S.type, S.id);
+                        let m = h.find(x => x.timestamp == ts && x.message == r.result);
+                        if(m) { 
+                            delete m.pending; await save(S.type, S.id, h); 
+                            let el = document.getElementById('msg-' + ts);
+                            if (el) el.replaceWith(createMsgNode(m, el.querySelector('.msg-sender') !== null, h));
+                        }
+                    }
+                } catch(e) {}
             };
             r.readAsDataURL(b);
         }
@@ -3997,8 +4135,22 @@ async function initRTC() {
     };
 }
 async function onSignal(m) {
-    const data = m.message ? JSON.parse(m.message) : {};
+    let data = {};
+    try { if(m.message) data = JSON.parse(m.message); } catch(e) {}
     const type = m.extra_data;
+    if(type === 'key_refresh_req') {
+        delete S.e2ee[m.from_user];
+        localStorage.removeItem('mw_pub_' + m.from_user);
+        let success = await ensureE2EE(m.from_user);
+        if (success) {
+            req('send', {to_user: m.from_user, type: 'signal', extra: 'key_refreshed'});
+        }
+        if(S.id === m.from_user) updateE2EEUI();
+        return;
+    } else if (type === 'key_refreshed') {
+        showToast(`E2EE keys refreshed automatically.`);
+        return;
+    }
     if(type === 'offer') {
         if(callState != 'idle') return sendSignal('busy', '', m.from_user);
         callPeer = m.from_user;
@@ -4449,7 +4601,28 @@ async function sendSticker(content, type='text') {
     
     let load = { message: content, type: type, timestamp: ts };
     if(S.type=='dm') load.to_user=S.id; else if(S.type=='group'||S.type=='channel') load.group_id=S.id; else if(S.type=='public') load.group_id=-1;
-    req('send', load);
+    
+    if (S.e2ee[S.id] && (S.type == 'dm' || S.type == 'group')) {
+        try {
+            let innerPayload = JSON.stringify({ _mw_enc: true, type: type, msg: content, extra: null });
+            let e = await enc(S.type, S.id, innerPayload);
+            load.message = e.c; load.extra = e.extra; load.type = 'enc';
+        } catch(err) { console.error("Encryption failed", err); }
+    }
+    
+    try {
+        let r = await req('send', load);
+        let d = await r.json();
+        if(d.status === 'success') {
+            let h = await get(S.type, S.id);
+            let m = h.find(x => x.timestamp == ts && x.message == content);
+            if(m) { 
+                delete m.pending; await save(S.type, S.id, h); 
+                let el = document.getElementById('msg-' + ts);
+                if (el) el.replaceWith(createMsgNode(m, el.querySelector('.msg-sender') !== null, h));
+            }
+        }
+    } catch(e) {}
 }
 
 // Mobile Swipe Back
