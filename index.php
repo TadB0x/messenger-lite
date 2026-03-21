@@ -1884,49 +1884,95 @@ async function loadSessions() {
 
 // --- BACK BUTTON HANDLER ---
 function initBackButtonHandler() {
-    S.hasPushedState = false;
+    S.openOverlays = [];
     S.ignoreNextPop = false;
+    S.closeTriggeredByPop = false;
 
     const isPWA = () => {
         return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
     };
 
+    const overlayIds = [
+        'main-view',
+        'emoji-drawer',
+        'att-menu',
+        'chat-menu',
+        'notif-list',
+        'user-popup',
+        'ctx-menu',
+        'app-modal',
+        'lightbox',
+        'media-preview',
+        'call-overlay'
+    ];
+
+    const isOverlayOpen = (id) => {
+        let el = document.getElementById(id);
+        if (!el) return false;
+        if (id === 'main-view') return el.classList.contains('active');
+        if (id === 'att-menu') return el.style.display === 'grid';
+        if (id === 'chat-menu' || id === 'notif-list' || id === 'ctx-menu') return el.style.display === 'block';
+        return el.style.display === 'flex';
+    };
+
+    const closeOverlay = (id) => {
+        let el = document.getElementById(id);
+        if (!el) return;
+        if (id === 'main-view') closeChat();
+        else if (id === 'emoji-drawer') el.style.display = 'none';
+        else if (id === 'att-menu') el.style.display = 'none';
+        else if (id === 'chat-menu') el.style.display = 'none';
+        else if (id === 'notif-list') el.style.display = 'none';
+        else if (id === 'user-popup') el.style.display = 'none';
+        else if (id === 'ctx-menu') el.style.display = 'none';
+        else if (id === 'app-modal') {
+            let cancelBtn = document.getElementById('modal-cancel');
+            if (cancelBtn && cancelBtn.style.display !== 'none') cancelBtn.click();
+            else el.style.display = 'none';
+        }
+        else if (id === 'lightbox') closeLightbox();
+        else if (id === 'media-preview') closePreview();
+        else if (id === 'call-overlay') {
+            if (typeof callState !== 'undefined' && callState === 'incoming') rejectCall();
+            else endCall();
+        }
+    };
+
     const observer = new MutationObserver(() => {
         if (!isPWA() || window.innerWidth > 850) return;
 
-        let isOpen = false;
-        if (document.getElementById('call-overlay') && document.getElementById('call-overlay').style.display === 'flex') isOpen = true;
-        else if (document.getElementById('media-preview') && document.getElementById('media-preview').style.display === 'flex') isOpen = true;
-        else if (document.getElementById('lightbox') && document.getElementById('lightbox').style.display === 'flex') isOpen = true;
-        else if (document.getElementById('app-modal') && document.getElementById('app-modal').style.display === 'flex') isOpen = true;
-        else if (document.getElementById('ctx-menu') && document.getElementById('ctx-menu').style.display === 'block') isOpen = true;
-        else if (document.getElementById('user-popup') && document.getElementById('user-popup').style.display === 'flex') isOpen = true;
-        else if (document.getElementById('notif-list') && document.getElementById('notif-list').style.display === 'block') isOpen = true;
-        else if (document.getElementById('chat-menu') && document.getElementById('chat-menu').style.display === 'block') isOpen = true;
-        else if (document.getElementById('emoji-drawer') && document.getElementById('emoji-drawer').style.display === 'flex') isOpen = true;
-        else if (document.getElementById('att-menu') && document.getElementById('att-menu').style.display === 'grid') isOpen = true;
-        else if (document.getElementById('main-view') && document.getElementById('main-view').classList.contains('active')) isOpen = true;
+        let currentVisible = [];
+        overlayIds.forEach(id => {
+            if (isOverlayOpen(id)) currentVisible.push(id);
+        });
 
-        if (isOpen && !S.hasPushedState) {
-            history.pushState({ app_state: true }, '');
-            S.hasPushedState = true;
-        } else if (!isOpen && S.hasPushedState) {
-            S.ignoreNextPop = true;
-            history.back();
-            S.hasPushedState = false;
+        let diff = currentVisible.length - S.openOverlays.length;
+
+        if (diff > 0) {
+            for (let i = 0; i < diff; i++) {
+                history.pushState({ mw_overlay: true }, '');
+            }
+            S.openOverlays = currentVisible;
+        } else if (diff < 0) {
+            if (!S.closeTriggeredByPop) {
+                S.ignoreNextPop = true;
+                history.go(diff);
+                setTimeout(() => { S.ignoreNextPop = false; }, 200);
+            }
+            S.openOverlays = currentVisible;
         }
     });
 
     const configStyle = { attributes: true, attributeFilter: ['style'] };
     const configClass = { attributes: true, attributeFilter: ['class'] };
 
-    ['call-overlay', 'media-preview', 'lightbox', 'app-modal', 'ctx-menu', 'user-popup', 'notif-list', 'chat-menu', 'emoji-drawer', 'att-menu'].forEach(id => {
+    overlayIds.forEach(id => {
         let el = document.getElementById(id);
-        if (el) observer.observe(el, configStyle);
+        if (el) {
+            if (id === 'main-view') observer.observe(el, configClass);
+            else observer.observe(el, configStyle);
+        }
     });
-    
-    let mv = document.getElementById('main-view');
-    if (mv) observer.observe(mv, configClass);
 
     window.addEventListener('popstate', (e) => {
         if (S.ignoreNextPop) {
@@ -1936,31 +1982,14 @@ function initBackButtonHandler() {
         
         if (!isPWA() || window.innerWidth > 850) return;
 
-        S.hasPushedState = false;
-
-        let co = document.getElementById('call-overlay');
-        let mp = document.getElementById('media-preview');
-        let lb = document.getElementById('lightbox');
-        let mo = document.getElementById('app-modal');
-        let ctx = document.getElementById('ctx-menu');
-        let up = document.getElementById('user-popup');
-        let nl = document.getElementById('notif-list');
-        let cm = document.getElementById('chat-menu');
-        let em = document.getElementById('emoji-drawer');
-        let am = document.getElementById('att-menu');
-        let mv = document.getElementById('main-view');
-
-        if (co && co.style.display === 'flex') { if (typeof callState !== 'undefined' && callState === 'incoming') rejectCall(); else endCall(); }
-        else if (mp && mp.style.display === 'flex') closePreview();
-        else if (lb && lb.style.display === 'flex') closeLightbox();
-        else if (ctx && ctx.style.display === 'block') ctx.style.display = 'none';
-        else if (up && up.style.display === 'flex') up.style.display = 'none';
-        else if (nl && nl.style.display === 'block') nl.style.display = 'none';
-        else if (cm && cm.style.display === 'block') cm.style.display = 'none';
-        else if (mo && mo.style.display === 'flex') { let cancelBtn = document.getElementById('modal-cancel'); if (cancelBtn && cancelBtn.style.display !== 'none') cancelBtn.click(); else mo.style.display = 'none'; }
-        else if (em && em.style.display === 'flex') em.style.display = 'none';
-        else if (am && am.style.display === 'grid') am.style.display = 'none';
-        else if (mv && mv.classList.contains('active')) closeChat();
+        if (S.openOverlays.length > 0) {
+            let topmost = S.openOverlays[S.openOverlays.length - 1];
+            S.closeTriggeredByPop = true;
+            closeOverlay(topmost);
+            Promise.resolve().then(() => {
+                setTimeout(() => { S.closeTriggeredByPop = false; }, 0);
+            });
+        }
     });
 }
 
