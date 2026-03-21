@@ -2933,6 +2933,7 @@ async function renderLists(){
                 if(last.length>30)last=last.substring(0,30)+'...';
                 let ou=S.online.find(x=>x.username==u);
                 let prof = S.profiles[u];
+                let av = (ou && ou.avatar) ? ou.avatar : (prof ? prof.avatar : '');
                 dms.push({key: u, u: displayName, last, av, ou, lock, ts: lastMsg ? lastMsg.timestamp : 0});
             }
         }
