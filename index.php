@@ -1062,8 +1062,8 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('?action=sw');
     .media-grid-item img { width:100%; height:100%; object-fit:cover; cursor:pointer; display:block; }
     .media-grid-more { position:absolute; inset:0; background:rgba(0,0,0,0.65); display:flex; align-items:center; justify-content:center; color:#fff; font-size:1.6rem; font-weight:700; cursor:pointer; }
     /* Multi-attach preview bar */
-    .multi-attach-bar { display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--border); overflow-x:auto; scrollbar-width:none; }
-    .multi-attach-bar::-webkit-scrollbar { display:none; }
+    .multi-attach-bar { display:flex; flex-direction:column; gap:4px; padding:8px 12px; border-top:1px solid var(--border); background:var(--panel); z-index:10; }
+    #multi-attach-scroll::-webkit-scrollbar { display:none; }
     .multi-attach-thumb { position:relative; flex-shrink:0; width:68px; height:68px; border-radius:8px; overflow:hidden; border:2px solid var(--border); }
     .multi-attach-thumb img { width:100%; height:100%; object-fit:cover; display:block; }
     .multi-attach-thumb .rm-btn { position:absolute; top:2px; right:2px; width:18px; height:18px; background:rgba(0,0,0,0.75); color:#fff; border:none; border-radius:50%; font-size:13px; cursor:pointer; display:flex; align-items:center; justify-content:center; padding:0; line-height:1; }
@@ -1610,6 +1610,14 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('?action=sw');
             <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
         </div>
 
+        <div id="multi-attach-ui" class="multi-attach-bar" style="display:none">
+            <div style="display:flex; justify-content:space-between; align-items:center; width:100%">
+                <span class="multi-attach-count" id="multi-attach-count"></span>
+                <span onclick="cancelMultiAttach()" style="cursor:pointer; padding:0 5px; font-size:1.3rem; color:var(--text-muted,#aaa); line-height:1">&times;</span>
+            </div>
+            <div id="multi-attach-scroll" style="display:flex;gap:8px;align-items:center;width:100%;overflow-x:auto;scrollbar-width:none;min-width:0"></div>
+        </div>
+
         <div class="input-area" id="input-box" style="visibility:hidden">
             <input type="file" id="file" hidden onchange="uploadFile(this)">
             <button class="btn-icon" id="btn-emoji" onclick="toggleEmojiDrawer()">
@@ -1620,11 +1628,6 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('?action=sw');
                     <div id="reply-txt" style="flex:1;overflow:hidden;margin-right:10px"></div>
                 <button id="del-btn" style="display:none;font-size:0.8rem;color:#f55;margin-right:10px;background:none;border:none;cursor:pointer" onclick="deleteMsg()">Delete</button>
                     <span onclick="cancelReply()" style="cursor:pointer">&times;</span>
-                </div>
-                <div id="multi-attach-ui" class="multi-attach-bar" style="display:none">
-                    <div id="multi-attach-scroll" style="display:flex;gap:8px;align-items:center;flex:1;overflow-x:auto;scrollbar-width:none;min-width:0"></div>
-                    <span class="multi-attach-count" id="multi-attach-count"></span>
-                    <span onclick="cancelMultiAttach()" style="cursor:pointer;padding:5px;font-size:1.3rem;color:var(--text-muted,#aaa);flex-shrink:0">&times;</span>
                 </div>
                 <div class="reply-ctx" id="file-preview-ui" style="display:none;border-bottom:1px solid var(--border)">
                     <div style="display:flex;align-items:center;gap:10px;overflow:hidden;flex:1">
@@ -4892,17 +4895,20 @@ let tSX=0, tSY=0, isDragging=false;
 const mv = document.getElementById('main-view');
 mv.addEventListener('touchstart', e => {
     if(window.innerWidth > 850) return;
+        if(e.target.closest('#multi-attach-scroll')) return;
     tSX = e.touches[0].clientX; tSY = e.touches[0].clientY;
     isDragging = false; mv.style.transition = 'none';
 }, {passive:true});
 mv.addEventListener('touchmove', e => {
     if(window.innerWidth > 850 || !mv.classList.contains('active')) return;
+        if(e.target.closest('#multi-attach-scroll')) return;
     let dx = e.touches[0].clientX - tSX, dy = e.touches[0].clientY - tSY;
     if(!isDragging && dx > 10 && Math.abs(dy) < Math.abs(dx) * 0.8) isDragging = true;
     if(isDragging) { if(e.cancelable) e.preventDefault(); mv.style.transform = `translateX(${Math.max(0, dx)}px)`; }
 }, {passive:false});
 mv.addEventListener('touchend', e => {
     if(window.innerWidth > 850) return;
+        if(e.target.closest('#multi-attach-scroll')) return;
     mv.style.transition = '';
     if(isDragging) {
         if(e.changedTouches[0].clientX - tSX > 100) { closeChat(); mv.style.transform = ''; }
