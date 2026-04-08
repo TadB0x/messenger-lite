@@ -172,7 +172,7 @@ try {
         $db->exec("PRAGMA user_version = 7");
     }
 
-} catch (PDOException $e) { die("DB Error: " . $e->getMessage()); }
+} catch (PDOException $e) { error_log("DB Error: " . $e->getMessage()); die("A database error occurred. Please check the server logs."); }
 
 // -------------------------------------------------------------------------
 // 2. BACKEND API
@@ -333,6 +333,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$user]);
         if ($stmt->fetch()) { echo json_encode(['status'=>'error','message'=>'Username taken']); exit; }
 
+        if (strlen($input['password'] ?? '') < 8) { echo json_encode(['status'=>'error','message'=>'Password must be at least 8 characters']); exit; }
         $pass = password_hash($input['password'], PASSWORD_DEFAULT);
         try {
             $stmt = $db->prepare("INSERT INTO users (username, password, joined_at, last_seen) VALUES (?, ?, ?, ?)");
@@ -345,7 +346,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
     if ($action === 'login') {
+        // Rate limit: max 10 login attempts per 10 minutes per IP
+        $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+        $rateLimitKey = 'login_attempts_' . md5($ip);
+        if (!isset($_SESSION[$rateLimitKey])) $_SESSION[$rateLimitKey] = ['count' => 0, 'window_start' => time()];
+        $rl = &$_SESSION[$rateLimitKey];
+        if (time() - $rl['window_start'] > 600) { $rl['count'] = 0; $rl['window_start'] = time(); }
+        $rl['count']++;
+        if ($rl['count'] > 10) {
+            http_response_code(429);
+            echo json_encode(['status' => 'error', 'message' => 'Too many login attempts. Try again later.']);
+            exit;
+        }
         if (!empty($adminUser) && !empty($adminPass) && ($input['username'] ?? '') === $adminUser && ($input['password'] ?? '') === $adminPass) {
+            $rl['count'] = 0;
             session_regenerate_id(true);
             $_SESSION['admin'] = true;
             echo json_encode(['status' => 'success']);
@@ -355,6 +369,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$input['username']]);
         $row = $stmt->fetch();
         if ($row && password_verify($input['password'], $row['password'])) {
+            $rl['count'] = 0;
             session_regenerate_id(true);
             $_SESSION['user'] = $row['username'];
             $_SESSION['uid'] = $row['id'];
@@ -437,10 +452,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
         if (!empty($input['new_password'])) {
+            if (strlen($input['new_password']) < 8) { echo json_encode(['status'=>'error','message'=>'Password must be at least 8 characters']); exit; }
             $db->prepare("UPDATE users SET password = ? WHERE id = ?")->execute([password_hash($input['new_password'], PASSWORD_DEFAULT), $myId]);
         }
         if (isset($input['bio'])) {
-            $db->prepare("UPDATE users SET bio = ? WHERE id = ?")->execute([htmlspecialchars($input['bio']), $myId]);
+            $db->prepare("UPDATE users SET bio = ? WHERE id = ?")->execute([substr($input['bio'], 0, 200), $myId]);
         }
         echo json_encode(['status' => 'success']);
         exit;
@@ -457,7 +473,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $reply = $input['reply_to'] ?? null;
         $extra = $input['extra'] ?? null;
         $type = $input['type'] ?? 'text';
-        $msg = $input['message'];
+        $msg = $input['message'] ?? '';
+        if (!is_string($msg)) { echo json_encode(['status'=>'error','message'=>'Invalid message']); exit; }
         if (strlen($msg) > 15000000) { echo json_encode(['status'=>'error','message'=>'Message too long']); exit; }
 
         if (isset($input['to_user'])) {
@@ -517,6 +534,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $reply = $_POST['reply_to'] ?? null;
         
         if (!empty($_POST['to_user'])) {
+            // Verify recipient exists
+            $chkUser = $db->prepare("SELECT id FROM users WHERE lower(username) = lower(?)");
+            $chkUser->execute([$_POST['to_user']]);
+            if (!$chkUser->fetch() && $_POST['to_user'] !== $me) {
+                echo json_encode(['status'=>'error','message'=>'User not found']); exit;
+            }
+            // Check if sender is blocked by recipient
+            $blkStmt = $db->prepare("SELECT 1 FROM blocked_users WHERE blocker_id = (SELECT id FROM users WHERE lower(username)=lower(?)) AND blocked_id = ?");
+            $blkStmt->execute([$_POST['to_user'], $myId]);
+            if ($blkStmt->fetch()) { echo json_encode(['status'=>'error','message'=>'Blocked']); exit; }
             $stmt = $db->prepare("INSERT INTO messages (from_user, to_user, message, type, reply_to_id, extra_data, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)");
             $stmt->execute([$me, $_POST['to_user'], $msg, $type, $reply, $extra, $ts]);
         } else if (!empty($_POST['group_id'])) {
@@ -543,13 +570,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // GROUPS
     if ($action === 'create_group') {
         $type = $input['type'];
+        if (!in_array($type, ['public', 'discoverable', 'private'])) { echo json_encode(['status'=>'error','message'=>'Invalid type']); exit; }
         $cat = $input['category'] ?? 'group';
+        if (!in_array($cat, ['group', 'channel'])) { echo json_encode(['status'=>'error','message'=>'Invalid category']); exit; }
         $code = ($type === 'public' || $type === 'discoverable') ? rand(100000, 999999) : null;
         $joinEnabled = ($type === 'private') ? 0 : 1;
         
+        $groupName = trim($input['name'] ?? '');
+        if (strlen($groupName) < 1 || strlen($groupName) > 100) { echo json_encode(['status'=>'error','message'=>'Group name must be 1-100 characters']); exit; }
         try {
             $db->prepare("INSERT INTO groups (name, type, owner_id, join_code, created_at, join_enabled, category) VALUES (?, ?, ?, ?, ?, ?, ?)")
-               ->execute([htmlspecialchars($input['name']), $type, $myId, $code, time(), $joinEnabled, $cat]);
+               ->execute([$groupName, $type, $myId, $code, time(), $joinEnabled, $cat]);
             $gid = $db->lastInsertId();
             $db->prepare("INSERT INTO group_members (group_id, user_id) VALUES (?, ?)")->execute([$gid, $myId]);
             echo json_encode(['status' => 'success']);
@@ -664,9 +695,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode(['status'=>'success']); exit;
     }
 
-    // GROUP INVITE LINK (get join_code for sharing)
+    // GROUP INVITE LINK (get join_code for sharing) — only members of the group may fetch it
     if ($action === 'get_invite_link') {
         $gid = (int)($input['group_id'] ?? 0);
+        $memChk = $db->prepare("SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?");
+        $memChk->execute([$gid, $myId]);
+        if (!$memChk->fetch()) { echo json_encode(['status'=>'error','message'=>'Not a member']); exit; }
         $stmt = $db->prepare("SELECT join_code FROM groups WHERE id = ?");
         $stmt->execute([$gid]);
         $grp = $stmt->fetch();
@@ -699,13 +733,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $t7d = $now_ms - 604800000;
 
             // 1. DMs (group_id IS NULL) -> 24h
-            $db->exec("DELETE FROM messages WHERE group_id IS NULL AND timestamp < $t24h");
+            $db->prepare("DELETE FROM messages WHERE group_id IS NULL AND timestamp < ?")->execute([$t24h]);
             // 2. Groups (category='group') -> 24h
-            $db->exec("DELETE FROM messages WHERE group_id IN (SELECT id FROM groups WHERE category = 'group') AND timestamp < $t24h");
+            $db->prepare("DELETE FROM messages WHERE group_id IN (SELECT id FROM groups WHERE category = 'group') AND timestamp < ?")->execute([$t24h]);
             // 3. Channels (category='channel') NOT discoverable -> 7 days
-            $db->exec("DELETE FROM messages WHERE group_id IN (SELECT id FROM groups WHERE category = 'channel' AND type != 'discoverable') AND timestamp < $t7d");
+            $db->prepare("DELETE FROM messages WHERE group_id IN (SELECT id FROM groups WHERE category = 'channel' AND type != 'discoverable') AND timestamp < ?")->execute([$t7d]);
             // 4. Public Chat (group_id = -1) -> 5 mins (Keep existing ephemeral nature)
-            $db->exec("DELETE FROM messages WHERE group_id = -1 AND timestamp < " . ($now_ms - 300000));
+            $t5m = $now_ms - 300000;
+            $db->prepare("DELETE FROM messages WHERE group_id = -1 AND timestamp < ?")->execute([$t5m]);
         }
 
         // Self Profile
@@ -714,8 +749,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // ACKs
         if (!empty($input['ack_dms'])) {
-            $ids = implode(',', array_map('intval', $input['ack_dms']));
-            if ($ids) $db->exec("DELETE FROM messages WHERE id IN ($ids) AND to_user = " . $db->quote($me));
+            $ids = array_map('intval', (array)$input['ack_dms']);
+            if ($ids) {
+                $placeholders = implode(',', array_fill(0, count($ids), '?'));
+                $params = array_merge($ids, [$me]);
+                $db->prepare("DELETE FROM messages WHERE id IN ($placeholders) AND to_user = ?")->execute($params);
+            }
         }
         if (!empty($input['group_cursors'])) {
             $stmt = $db->prepare("UPDATE group_members SET last_received_id = ? WHERE group_id = ? AND user_id = ?");
@@ -763,7 +802,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // Public Chat
         $lastPub = $input['last_pub'] ?? 0;
-        $db->exec("DELETE FROM messages WHERE group_id = -1 AND timestamp < " . (round(microtime(true) * 1000) - 300000));
+        $db->prepare("DELETE FROM messages WHERE group_id = -1 AND timestamp < ?")->execute([round(microtime(true) * 1000) - 300000]);
         $stmt = $db->prepare("SELECT * FROM messages WHERE group_id = -1 AND id > ? ORDER BY id ASC");
         $stmt->execute([$lastPub]);
         $pubMsgs = $stmt->fetchAll();
@@ -773,7 +812,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-if ($action === 'logout') { session_destroy(); header("Location: index.php"); exit; }
+if ($action === 'logout') {
+    // Invalidate persistent auth token if one was used
+    if (isset($_SESSION['uid'])) {
+        try {
+            $db->prepare("DELETE FROM auth_tokens WHERE user_id = ?")->execute([$_SESSION['uid']]);
+        } catch (Exception $e) {}
+    }
+    session_destroy();
+    header("Location: index.php");
+    exit;
+}
 
 // -------------------------------------------------------------------------
 // FRONTEND
@@ -853,27 +902,37 @@ async function loadData() {
         document.getElementById('stats').innerHTML = sh;
 
         // Users
-        let uh = '';
+        function esc(t){return t?String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;"):""}
+        let tbody = document.querySelector('#users-table tbody');
+        tbody.innerHTML = '';
+        if(!d.users.length) { tbody.innerHTML = '<tr><td colspan="6">No users found</td></tr>'; }
         d.users.forEach(u => {
             let obsBtn = '';
             if(u.observatory_access == 1) obsBtn = `<button class="btn action-btn" style="background:#4caf50;margin-right:5px" onclick="apprObs(${u.id}, 1)">Approve</button><button class="btn btn-danger action-btn" onclick="apprObs(${u.id}, 0)">Deny</button>`;
             else if(u.observatory_access == 2) obsBtn = `<span style="color:#4caf50;margin-right:5px">Active</span><button class="btn btn-danger action-btn" style="padding:2px 6px;font-size:0.7rem" onclick="apprObs(${u.id}, 0)">Revoke</button>`;
             else obsBtn = `<span style="color:#666">None</span>`;
-            
-            uh += `<tr><td>${u.id}</td><td>${u.username}</td><td>${new Date(u.joined_at*1000).toLocaleDateString()}</td><td>${new Date(u.last_seen*1000).toLocaleString()}</td><td>${obsBtn}</td><td><button class="btn btn-danger action-btn" onclick="delUser(${u.id}, '${u.username}')">Delete</button></td></tr>`;
+
+            let tr = document.createElement('tr');
+            tr.innerHTML = `<td>${parseInt(u.id)}</td><td></td><td>${esc(new Date(u.joined_at*1000).toLocaleDateString())}</td><td>${esc(new Date(u.last_seen*1000).toLocaleString())}</td><td>${obsBtn}</td><td><button class="btn btn-danger action-btn" onclick="delUser(${parseInt(u.id)})">Delete</button></td>`;
+            tr.cells[1].textContent = u.username;
+            tbody.appendChild(tr);
         });
-        document.querySelector('#users-table tbody').innerHTML = uh || '<tr><td colspan="6">No users found</td></tr>';
 
         // Groups
-        let gh = '';
+        let gtbody = document.querySelector('#groups-table tbody');
+        gtbody.innerHTML = '';
+        if(!d.groups.length) { gtbody.innerHTML = '<tr><td colspan="6">No groups found</td></tr>'; }
         d.groups.forEach(g => {
-            gh += `<tr><td>${g.id}</td><td>${g.name}</td><td>${g.type}</td><td>${g.owner_id}</td><td>${new Date(g.created_at*1000).toLocaleDateString()}</td><td><button class="btn btn-danger action-btn" onclick="delGroup(${g.id})">Delete</button></td></tr>`;
+            let tr = document.createElement('tr');
+            tr.innerHTML = `<td>${parseInt(g.id)}</td><td></td><td></td><td>${parseInt(g.owner_id)}</td><td>${esc(new Date(g.created_at*1000).toLocaleDateString())}</td><td><button class="btn btn-danger action-btn" onclick="delGroup(${parseInt(g.id)})">Delete</button></td>`;
+            tr.cells[1].textContent = g.name;
+            tr.cells[2].textContent = g.type;
+            gtbody.appendChild(tr);
         });
-        document.querySelector('#groups-table tbody').innerHTML = gh || '<tr><td colspan="6">No groups found</td></tr>';
     }
 }
-async function delUser(id, name) {
-    if(confirm(`Delete user ${name}? This cannot be undone.`)) {
+async function delUser(id) {
+    if(confirm(`Delete user ID ${parseInt(id)}? This cannot be undone.`)) {
         await fetch('?action=admin_delete_user', {method:'POST', headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF_TOKEN}, body:JSON.stringify({id})});
         loadData();
     }
@@ -1877,7 +1936,7 @@ Promise.all([
 </div>
 
 <script>
-const ME = "<?php echo $_SESSION['user']; ?>";
+const ME = "<?php echo addslashes(htmlspecialchars($_SESSION['user'], ENT_QUOTES, 'UTF-8')); ?>";
 const CSRF_TOKEN = "<?php echo $_SESSION['csrf_token']; ?>";
 const LIGHTWEIGHT_MODE = <?php echo $lightweightMode ? 'true' : 'false'; ?>;
 let lastTyping = 0;
@@ -3011,38 +3070,48 @@ async function loadObservatory() {
     
     // Market
     let mh = '';
-    if(m.usd) mh += `<div class="market-row-item"><div class="market-row-label">${t.market_usd}</div><div class="market-row-val">${m.usd}</div></div>`;
-    if(m.oil) mh += `<div class="market-row-item"><div class="market-row-label">${t.market_oil}</div><div class="market-row-val">${m.oil}</div></div>`;
-    if(m.updated) mh += `<div class="market-row-item"><div class="market-row-label">${t.market_updated}</div><div class="market-row-val" style="font-size:1rem;color:#888">${m.updated}</div></div>`;
+    if(m.usd) mh += `<div class="market-row-item"><div class="market-row-label">${t.market_usd}</div><div class="market-row-val">${obsEsc(m.usd)}</div></div>`;
+    if(m.oil) mh += `<div class="market-row-item"><div class="market-row-label">${t.market_oil}</div><div class="market-row-val">${obsEsc(m.oil)}</div></div>`;
+    if(m.updated) mh += `<div class="market-row-item"><div class="market-row-label">${t.market_updated}</div><div class="market-row-val" style="font-size:1rem;color:#888">${obsEsc(m.updated)}</div></div>`;
     document.getElementById('obs-market-list').innerHTML = mh;
     document.getElementById('obs-last-upd').innerText = t.market_updated + ': ' + (m.updated || '-');
 
     // News
-    let nh = '';
+    function obsEsc(t){return t?String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;"):""}
+    let newsGrid = document.getElementById('obs-news-grid');
+    newsGrid.innerHTML = '';
     n.forEach((item, i) => {
-        let title = item.title_fa || item.title_en;
-        let summary = Array.isArray(item.summary) ? '<ul class="news-summary-list">' + item.summary.map(s => `<li>${s}</li>`).join('') + '</ul>' : item.summary;
+        let title = obsEsc(item.title_fa || item.title_en || '');
+        let summary = '';
+        if(Array.isArray(item.summary)) {
+            summary = '<ul class="news-summary-list">' + item.summary.map(s => `<li>${obsEsc(s)}</li>`).join('') + '</ul>';
+        } else {
+            summary = obsEsc(item.summary || '');
+        }
         let date = new Date(item.timestamp * 1000);
-        let timeStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        let timeStr = obsEsc(date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}));
         let sentimentColor = item.sentiment > 0 ? '#4caf50' : (item.sentiment < 0 ? '#f44336' : '#9e9e9e');
         let aiLabel = curLang == 'fa' ? 'تحلیل هوش مصنوعی' : 'AI Analysis';
         let readMore = curLang == 'fa' ? 'بیشتر بخوانید &larr;' : 'Read More &rarr;';
-        let impact = item.impact ? `<div class="news-impact"><strong>${aiLabel}</strong>${item.impact}</div>` : '';
-        
-        nh += `<div class="news-card-lg" onclick="window.open('${item.url}', '_blank')">
-            <div class="news-card-body">
-                <div class="news-card-meta"><span class="news-tag">${item.tag}</span> <span style="display:flex;align-items:center"><span class="sentiment-dot" style="background:${sentimentColor}"></span> ${item.source}</span></div>
-                <div class="news-card-title">${title}</div>
-                <div class="news-card-summary">${summary}</div>
-                ${impact}
-            </div>
-            <div class="news-card-footer">
-                <span>${timeStr}</span>
-                <span>${readMore}</span>
-            </div>
+        let impact = item.impact ? `<div class="news-impact"><strong>${aiLabel}</strong>${obsEsc(item.impact)}</div>` : '';
+        // Validate URL — only allow http/https
+        let safeUrl = (item.url && /^https?:\/\//.test(item.url)) ? item.url : '#';
+
+        let card = document.createElement('div');
+        card.className = 'news-card-lg';
+        card.onclick = () => window.open(safeUrl, '_blank', 'noopener,noreferrer');
+        card.innerHTML = `<div class="news-card-body">
+            <div class="news-card-meta"><span class="news-tag">${obsEsc(item.tag)}</span> <span style="display:flex;align-items:center"><span class="sentiment-dot" style="background:${sentimentColor}"></span> ${obsEsc(item.source)}</span></div>
+            <div class="news-card-title">${title}</div>
+            <div class="news-card-summary">${summary}</div>
+            ${impact}
+        </div>
+        <div class="news-card-footer">
+            <span>${timeStr}</span>
+            <span>${readMore}</span>
         </div>`;
+        newsGrid.appendChild(card);
     });
-    document.getElementById('obs-news-grid').innerHTML = nh;
 }
 
 async function reqObservatory() {
@@ -3330,7 +3399,7 @@ function createMsgNode(m, showSender, history){
     div.id = 'msg-' + m.timestamp;
     div.className=`msg ${m.from_user==ME?'out':'in'} ${m.pinned?'pinned':''} ${m.type=='sticker'?'msg-sticker':''}`;
     let sender='';
-    if(showSender) sender=`<div class="msg-sender" onclick="if(ME!='${m.from_user}'){openChat('dm','${m.from_user}');switchTab('chats');}">${m.from_user}</div>`;
+    if(showSender) sender=`<div class="msg-sender" onclick="if(ME!=='${esc(jsEsc(m.from_user))}'){openChat('dm','${esc(jsEsc(m.from_user))}');switchTab('chats');}">${esc(m.from_user)}</div>`;
 
     let safeHtmlMsg = esc(m.message);
     let txt;
@@ -3781,7 +3850,7 @@ async function ctxAction(act, arg) {
             if(myReact === arg) await sendReact(m.timestamp, null);
             else await sendReact(m.timestamp, arg);
         }
-        else if(act=='reply') { S.reply=m.timestamp; document.getElementById('reply-ui').style.display='flex'; let snip=m.type=='text'?esc(m.message).substring(0,30):'['+m.type+']'; document.getElementById('reply-txt').innerHTML=`<div style="font-size:0.75rem;color:var(--accent);margin-bottom:2px">Replying to ${m.from_user}</div><div style="color:var(--text);opacity:0.9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${snip}</div>`; document.getElementById('del-btn').style.display='none'; document.getElementById('txt').focus(); }
+        else if(act=='reply') { S.reply=m.timestamp; document.getElementById('reply-ui').style.display='flex'; let snip=m.type=='text'?esc(m.message).substring(0,30):'['+m.type+']'; document.getElementById('reply-txt').innerHTML=`<div style="font-size:0.75rem;color:var(--accent);margin-bottom:2px">Replying to ${esc(m.from_user)}</div><div style="color:var(--text);opacity:0.9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${snip}</div>`; document.getElementById('del-btn').style.display='none'; document.getElementById('txt').focus(); }
         else if(act=='edit') {
             S.editMsgId = m.timestamp;
             document.getElementById('reply-ui').style.display='flex';
@@ -3832,7 +3901,7 @@ async function viewReactionUser(e, user) {
         <div class="avatar" style="width:50px;height:50px;font-size:1.5rem;background-image:url('${esc(p.avatar||'')}')">${p.avatar?'':esc(p.username[0])}</div>
         <div>
             <div style="font-weight:bold;font-size:1.1rem">${esc(p.username)}</div>
-            <div style="color:#888;font-size:0.9rem">${p.bio||'No bio'}</div>
+            <div style="color:#888;font-size:0.9rem">${esc(p.bio||'No bio')}</div>
         </div>
     </div>
     <div style="font-size:0.8rem;color:#666;margin-top:5px">
@@ -4640,7 +4709,7 @@ function saveSettings(){
     alertModal("Settings", "Profile updated.");
 }
 
-async function discover(cat){ startProg(); alertModal("Discover "+(cat=='channel'?'Channels':'Groups'), '<div class="tab-loader" style="min-height:150px"><div class="rail-letters"><span>m</span><span>o</span><span>R</span><span>e</span></div><div class="rail-dot"></div></div>'); let r=await fetch('?action=get_discoverable_groups&cat='+cat); endProg(); let d=await r.json(); let h='<div style="max-height:300px;overflow-y:auto">'; d.items.forEach(g=>{ h+=`<div style="padding:10px;border-bottom:1px solid #333;display:flex;justify-content:space-between;align-items:center"><div><b>${g.name}</b><br><span style="color:#888;font-size:0.8rem">Code: ${g.join_code}</span></div><button class="btn-sec" onclick="req('join_group',{code:'${g.join_code}'}).then(()=>{document.getElementById('app-modal').style.display='none';renderLists()})">Join</button></div>`; }); h+='</div>'; document.getElementById('modal-body').innerHTML=h; }
+async function discover(cat){ startProg(); alertModal("Discover "+(cat=='channel'?'Channels':'Groups'), '<div class="tab-loader" style="min-height:150px"><div class="rail-letters"><span>m</span><span>o</span><span>R</span><span>e</span></div><div class="rail-dot"></div></div>'); let r=await fetch('?action=get_discoverable_groups&cat='+encodeURIComponent(cat)); endProg(); let d=await r.json(); let container=document.createElement('div'); container.style.cssText='max-height:300px;overflow-y:auto'; d.items.forEach(g=>{ let row=document.createElement('div'); row.style.cssText='padding:10px;border-bottom:1px solid #333;display:flex;justify-content:space-between;align-items:center'; let info=document.createElement('div'); let nameEl=document.createElement('b'); nameEl.textContent=g.name; let codeEl=document.createElement('span'); codeEl.style.cssText='color:#888;font-size:0.8rem'; codeEl.textContent='Code: '+g.join_code; info.appendChild(nameEl); info.appendChild(document.createElement('br')); info.appendChild(codeEl); let btn=document.createElement('button'); btn.className='btn-sec'; btn.textContent='Join'; let code=g.join_code; btn.onclick=()=>req('join_group',{code:code}).then(r=>r.json()).then(()=>{document.getElementById('app-modal').style.display='none';renderLists()}); row.appendChild(info); row.appendChild(btn); container.appendChild(row); }); let body=document.getElementById('modal-body'); body.innerHTML=''; body.appendChild(container); }
 
 async function showProfilePopup() {
     if(S.type === 'dm') {
@@ -4653,16 +4722,20 @@ async function showProfilePopup() {
         let html = `<div style="text-align:center;margin-bottom:15px">
             <div class="avatar" style="width:80px;height:80px;margin:0 auto 10px auto;font-size:2rem;background-image:url('${esc(p.avatar||'')}')">${p.avatar?'':esc(p.username[0])}</div>
             <b>${esc(p.username)}</b><br>
-            <span style="color:#888;font-size:0.8rem">${p.bio||'-'}</span><br>
+            <span style="color:#888;font-size:0.8rem">${esc(p.bio||'-')}</span><br>
             ${p.status_text ? `<span style="color:var(--accent);font-size:0.8rem;display:inline-block;margin-top:3px">● ${esc(p.status_text)}</span><br>` : ''}
             <div style="font-size:0.8rem;color:#666;margin-top:5px">
                 Joined: ${new Date(p.joined_at*1000).toLocaleDateString()}<br>
                 Last Seen: ${new Date(p.last_seen*1000).toLocaleString()}
             </div>
-            ${!S.e2ee[S.id] ? `<button class="btn-sec" style="margin-top:15px;width:100%" onclick="startE2EE();document.getElementById('app-modal').style.display='none'">Enable End-to-End Encryption</button>` : `<button class="btn-sec" style="margin-top:15px;width:100%;color:#ff9800;border-color:#ff9800" onclick="resetE2EE('${S.id}');document.getElementById('app-modal').style.display='none'">Reset E2EE Session</button>`}
-            <button class="btn-sec" style="margin-top:10px;width:100%;color:#f55;border-color:#f55" onclick="blockUser('${esc(S.id)}');document.getElementById('app-modal').style.display='none'">Block User</button>
+            ${!S.e2ee[S.id] ? `<button class="btn-sec" style="margin-top:15px;width:100%" onclick="startE2EE();document.getElementById('app-modal').style.display='none'">Enable End-to-End Encryption</button>` : `<button class="btn-sec" style="margin-top:15px;width:100%;color:#ff9800;border-color:#ff9800" id="reset-e2ee-btn-popup">Reset E2EE Session</button>`}
+            <button class="btn-sec" style="margin-top:10px;width:100%;color:#f55;border-color:#f55" id="block-user-btn-popup">Block User</button>
         </div>`;
         alertModal("Profile", ""); document.getElementById('modal-body').innerHTML = html;
+        let blkBtn = document.getElementById('block-user-btn-popup');
+        if(blkBtn) { let uid = S.id; blkBtn.onclick = () => { blockUser(uid); document.getElementById('app-modal').style.display='none'; }; }
+        let rstE2EEBtn = document.getElementById('reset-e2ee-btn-popup');
+        if(rstE2EEBtn) { let uid = S.id; rstE2EEBtn.onclick = () => { resetE2EE(uid); document.getElementById('app-modal').style.display='none'; }; }
     } else if (S.type === 'group' || S.type === 'channel') {
         startProg();
         let r = await fetch('?action=get_group_details&id='+S.id);
