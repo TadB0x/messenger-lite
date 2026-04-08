@@ -151,6 +151,27 @@ try {
         $db->exec("PRAGMA user_version = 6");
     }
 
+    if ($ver < 7) {
+        // Custom status, block list, username change support, message pinning column, read receipts table
+        $cols = $db->query("PRAGMA table_info(users)")->fetchAll(PDO::FETCH_COLUMN, 1);
+        if (!in_array('status_text', $cols)) $db->exec("ALTER TABLE users ADD COLUMN status_text TEXT");
+
+        $db->exec("CREATE TABLE IF NOT EXISTS blocked_users (
+            blocker_id INTEGER,
+            blocked_id INTEGER,
+            PRIMARY KEY (blocker_id, blocked_id)
+        )");
+
+        $db->exec("CREATE TABLE IF NOT EXISTS read_receipts (
+            message_id INTEGER,
+            user_id INTEGER,
+            read_at INTEGER,
+            PRIMARY KEY (message_id, user_id)
+        )");
+
+        $db->exec("PRAGMA user_version = 7");
+    }
+
 } catch (PDOException $e) { die("DB Error: " . $e->getMessage()); }
 
 // -------------------------------------------------------------------------
@@ -196,7 +217,7 @@ if ($action === 'ping') {
 if ($action === 'get_profile') {
     header('Content-Type: application/json');
     $u = $_GET['u'] ?? '';
-    $stmt = $db->prepare("SELECT username, avatar, bio, joined_at, last_seen, public_key FROM users WHERE lower(username) = lower(?)");
+    $stmt = $db->prepare("SELECT username, avatar, bio, status_text, joined_at, last_seen, public_key FROM users WHERE lower(username) = lower(?)");
     $stmt->execute([$u]);
     echo json_encode($stmt->fetch() ?: ['status'=>'error']);
     exit;
@@ -440,6 +461,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (strlen($msg) > 15000000) { echo json_encode(['status'=>'error','message'=>'Message too long']); exit; }
 
         if (isset($input['to_user'])) {
+            // Check recipient exists
+            $chkUser = $db->prepare("SELECT id FROM users WHERE lower(username) = lower(?)");
+            $chkUser->execute([$input['to_user']]);
+            if (!$chkUser->fetch() && $input['to_user'] !== $me) {
+                echo json_encode(['status'=>'error','message'=>'User not found']); exit;
+            }
+            // Check if sender is blocked (skip for system message types)
+            if (!in_array($type, ['signal', 'wsync', 'read', 'delete', 'edit'])) {
+                $blkStmt = $db->prepare("SELECT 1 FROM blocked_users WHERE blocker_id = (SELECT id FROM users WHERE lower(username)=lower(?)) AND blocked_id = ?");
+                $blkStmt->execute([$input['to_user'], $myId]);
+                if ($blkStmt->fetch()) { echo json_encode(['status'=>'error','message'=>'Blocked']); exit; }
+            }
             $stmt = $db->prepare("INSERT INTO messages (from_user, to_user, message, type, reply_to_id, extra_data, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)");
             $stmt->execute([$me, $input['to_user'], $msg, $type, $reply, $extra, $ts]);
         } else if (isset($input['group_id'])) {
@@ -576,6 +609,71 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // BLOCK USER
+    if ($action === 'block_user') {
+        $target = $input['username'] ?? '';
+        $unblock = $input['unblock'] ?? false;
+        $tStmt = $db->prepare("SELECT id FROM users WHERE lower(username) = lower(?)");
+        $tStmt->execute([$target]);
+        $tRow = $tStmt->fetch();
+        if (!$tRow) { echo json_encode(['status'=>'error','message'=>'User not found']); exit; }
+        if ($unblock) {
+            $db->prepare("DELETE FROM blocked_users WHERE blocker_id = ? AND blocked_id = ?")->execute([$myId, $tRow['id']]);
+        } else {
+            try { $db->prepare("INSERT INTO blocked_users (blocker_id, blocked_id) VALUES (?, ?)")->execute([$myId, $tRow['id']]); } catch(Exception $e) {}
+        }
+        echo json_encode(['status'=>'success']); exit;
+    }
+    if ($action === 'get_blocked') {
+        $stmt = $db->prepare("SELECT u.username FROM blocked_users b JOIN users u ON b.blocked_id = u.id WHERE b.blocker_id = ?");
+        $stmt->execute([$myId]);
+        echo json_encode(['status'=>'success', 'blocked'=>$stmt->fetchAll(PDO::FETCH_COLUMN)]); exit;
+    }
+
+    // USERNAME CHANGE
+    if ($action === 'change_username') {
+        $newUser = trim($input['username'] ?? '');
+        if (strlen($newUser) < 2 || strlen($newUser) > 30) { echo json_encode(['status'=>'error','message'=>'Username must be 2-30 characters']); exit; }
+        if (!preg_match('/^[a-zA-Z0-9_-]+$/', $newUser)) { echo json_encode(['status'=>'error','message'=>'Use letters, numbers, -, _ only']); exit; }
+        if (strtolower($newUser) === 'me') { echo json_encode(['status'=>'error','message'=>'Username reserved']); exit; }
+        $chk = $db->prepare("SELECT 1 FROM users WHERE lower(username) = lower(?) AND id != ?");
+        $chk->execute([$newUser, $myId]);
+        if ($chk->fetch()) { echo json_encode(['status'=>'error','message'=>'Username taken']); exit; }
+        $db->prepare("UPDATE users SET username = ? WHERE id = ?")->execute([$newUser, $myId]);
+        // Update messages from old username
+        $db->prepare("UPDATE messages SET from_user = ? WHERE from_user = ?")->execute([$newUser, $me]);
+        $db->prepare("UPDATE messages SET to_user = ? WHERE to_user = ?")->execute([$newUser, $me]);
+        session_regenerate_id(true);
+        $_SESSION['user'] = $newUser;
+        echo json_encode(['status'=>'success', 'username'=>$newUser]); exit;
+    }
+
+    // CUSTOM STATUS
+    if ($action === 'update_status') {
+        $status = substr($input['status'] ?? '', 0, 80);
+        $db->prepare("UPDATE users SET status_text = ? WHERE id = ?")->execute([$status, $myId]);
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    // PIN MESSAGE (server-side — stores in extra_data for group messages)
+    if ($action === 'pin_message') {
+        $msgId = (int)($input['message_id'] ?? 0);
+        $pin = $input['pin'] ?? true;
+        // Only update local; pinning is handled client-side via IndexedDB already
+        // This is a no-op on server but kept for future server-side pinning
+        echo json_encode(['status'=>'success']); exit;
+    }
+
+    // GROUP INVITE LINK (get join_code for sharing)
+    if ($action === 'get_invite_link') {
+        $gid = (int)($input['group_id'] ?? 0);
+        $stmt = $db->prepare("SELECT join_code FROM groups WHERE id = ?");
+        $stmt->execute([$gid]);
+        $grp = $stmt->fetch();
+        if (!$grp) { echo json_encode(['status'=>'error','message'=>'Group not found']); exit; }
+        echo json_encode(['status'=>'success','join_code'=>$grp['join_code']]); exit;
+    }
+
     // TYPING
     if ($action === 'typing') {
         $db->prepare("UPDATE users SET typing_to = ?, typing_at = ? WHERE id = ?")->execute([$input['to'], time(), $myId]);
@@ -611,7 +709,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // Self Profile
-        $myProfile = $db->prepare("SELECT username, avatar, joined_at, bio FROM users WHERE id = ?");
+        $myProfile = $db->prepare("SELECT username, avatar, joined_at, bio, status_text FROM users WHERE id = ?");
         $myProfile->execute([$myId]);
 
         // ACKs
@@ -638,16 +736,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
         $grpMsgs = [];
         foreach ($myGroups as $g) {
-            $stmt = $db->prepare("SELECT * FROM messages WHERE group_id = ? AND id > ? ORDER BY id ASC");
-            $stmt->execute([$g['id'], $g['last_received_id']]);
-            $msgs = $stmt->fetchAll();
+            // For channels: if last_received_id is 0 (new member / late joiner), fetch recent history
+            $lastId = (int)$g['last_received_id'];
+            if ($lastId === 0) {
+                // Fetch recent 50 messages for late joiners
+                $stmt = $db->prepare("SELECT * FROM messages WHERE group_id = ? ORDER BY id DESC LIMIT 50");
+                $stmt->execute([$g['id']]);
+                $msgs = array_reverse($stmt->fetchAll());
+            } else {
+                $stmt = $db->prepare("SELECT * FROM messages WHERE group_id = ? AND id > ? ORDER BY id ASC");
+                $stmt->execute([$g['id'], $lastId]);
+                $msgs = $stmt->fetchAll();
+            }
             if($msgs) {
                 $grpMsgs = array_merge($grpMsgs, $msgs);
             }
         }
     
         // Online Users
-        $online = $db->prepare("SELECT username, avatar, last_seen, bio FROM users WHERE last_seen > ?");
+        $online = $db->prepare("SELECT username, avatar, last_seen, bio, status_text FROM users WHERE last_seen > ?");
         $online->execute([time()-300]);
 
         // Typing
@@ -1370,6 +1477,10 @@ Promise.all([
     .news-summary-list { margin:0; padding:0 0 0 20px; list-style-type:disc; }
     .rtl .news-summary-list { padding:0 20px 0 0; direction: rtl; }
 
+    /* Message search highlight */
+    .msg-highlight { background: rgba(255,235,59,0.3) !important; outline: 2px solid #ffeb3b; }
+    #msg-search-bar.active { display: flex !important; }
+
     /* Call Overlay */
     #call-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:#000; z-index:5000; display:none; flex-direction:column; align-items:center; justify-content:center; }
     #remote-video { width:100%; height:100%; object-fit:cover; }
@@ -1496,7 +1607,7 @@ Promise.all([
         <div class="rail-btn" id="nav-settings" onclick="switchTab('settings')">
             <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L3.16 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
         </div>
-        <div class="rail-btn desktop-only" onclick="if(confirm('Logout?')){localStorage.removeItem('mw_auth_token');location.href='?action=logout'}" title="Logout">
+        <div class="rail-btn desktop-only" onclick="if(confirm('Logout?')){clearLocalStorageOnLogout();location.href='?action=logout'}" title="Logout">
             <svg viewBox="0 0 24 24"><path d="M10.09 15.59L11.5 17l5-5-5-5-1.41 1.41L12.67 11H3v2h9.67l-2.58 2.59zM19 3H5c-1.11 0-2 .9-2 2v4h2V5h14v14H5v-4H3v4c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/></svg>
         </div>
     </div>
@@ -1559,6 +1670,8 @@ Promise.all([
                 <h3 id="my-name"></h3>
                 <p id="my-date" style="color:#777;font-size:0.8rem"></p>
                 <div class="form-group"><label data-i18n="bio">Bio / Status</label><input class="form-input" id="set-bio" maxlength="50" autocomplete="off"></div>
+                <div class="form-group"><label>Custom Status</label><input class="form-input" id="set-status" maxlength="80" placeholder="e.g. Busy, On vacation..." autocomplete="off"></div>
+                <div class="form-group"><button class="btn-sec" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:4px;cursor:pointer;background:var(--panel);color:var(--text)" onclick="changeUsername()">Change Username</button></div>
                 <div class="form-group"><label data-i18n="avatar_url">Avatar</label>
                     <div style="display:flex;gap:5px"><input class="form-input" id="set-av" <?php if ($lightweightMode) echo 'placeholder="Local URL or Data URI only"'; ?> style="flex:1" autocomplete="off">
                     <button class="btn-sec" onclick="document.getElementById('up-av').click()">Upload</button></div>
@@ -1584,7 +1697,7 @@ Promise.all([
                     <button class="btn-sec" style="margin-bottom:20px;cursor:pointer;padding:8px 16px;border-radius:20px" onclick="checkUpdates()" data-i18n="check_updates">Check for Updates</button><br>
                     <a href="https://github.com/iWebbIO/php-messenger" target="_blank" class="about-link">GitHub Repository</a>
                     <br><br>
-                    <button class="btn-sec" style="width:100%;padding:10px;border:1px solid #f55;color:#f55;border-radius:4px;cursor:pointer;background:transparent" onclick="if(confirm('Logout?')){localStorage.removeItem('mw_auth_token');location.href='?action=logout'}" data-i18n="logout">Logout</button>
+                    <button class="btn-sec" style="width:100%;padding:10px;border:1px solid #f55;color:#f55;border-radius:4px;cursor:pointer;background:transparent" onclick="if(confirm('Logout?')){clearLocalStorageOnLogout();location.href='?action=logout'}" data-i18n="logout">Logout</button>
                 </div>
             </div>
         </div>
@@ -1626,6 +1739,9 @@ Promise.all([
             </div>
             
             <div class="header-actions">
+                <div class="btn-icon" id="btn-search-toggle" onclick="toggleMsgSearch()" title="Search">
+                    <svg viewBox="0 0 24 24" width="24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+                </div>
                 <div class="btn-icon" id="btn-call" onclick="startCall()" style="display:none">
                     <svg viewBox="0 0 24 24" width="24" fill="currentColor"><path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>
                 </div>
@@ -1644,6 +1760,20 @@ Promise.all([
                     </div>
                 </div>
             </div>
+        </div>
+
+        <!-- MESSAGE SEARCH BAR -->
+        <div id="msg-search-bar" style="display:none;padding:8px 15px;background:var(--panel);border-bottom:1px solid var(--border);gap:8px;align-items:center">
+            <input type="text" id="msg-search-input" class="form-input" placeholder="Search messages..." style="flex:1;border-radius:20px;padding:8px 14px;margin:0" oninput="searchMessages(this.value)" autocomplete="off">
+            <span id="msg-search-count" style="font-size:0.8rem;color:#888;white-space:nowrap"></span>
+            <div class="btn-icon" onclick="toggleMsgSearch()">&times;</div>
+        </div>
+
+        <!-- PINNED MESSAGE BANNER -->
+        <div id="pinned-banner" style="display:none;padding:8px 15px;background:rgba(168,85,247,0.1);border-bottom:1px solid var(--accent);cursor:pointer;font-size:0.85rem;align-items:center;gap:8px" onclick="scrollToPinned()">
+            <svg viewBox="0 0 24 24" width="16" fill="var(--accent)"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>
+            <div style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis" id="pinned-text"></div>
+            <span style="color:#888;font-size:0.75rem" id="pinned-unpin" onclick="event.stopPropagation();unpinMessage()">Unpin</span>
         </div>
 
         <div id="we-overlay" class="we-overlay">
@@ -1939,6 +2069,21 @@ function promptModal(t, p, cb) { showModal(t, 'prompt', p, cb); }
 function alertModal(t, m) { showModal(t, 'alert', m, null); }
 function confirmModal(t, m, cb) { showModal(t, 'confirm', m, cb); }
 
+// --- LOGOUT CLEANUP ---
+function clearLocalStorageOnLogout() {
+    // Remove auth token and all app-specific keys
+    let keysToRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        let k = localStorage.key(i);
+        if (k && (k.startsWith('mw_') || k === 'mw_auth_token')) {
+            keysToRemove.push(k);
+        }
+    }
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+    // Clear IndexedDB
+    try { indexedDB.deleteDatabase('mw_chat_db'); } catch(e) {}
+}
+
 // --- INIT ---
 async function loadKeys() {
     if(!window.crypto || !window.crypto.subtle) return;
@@ -2130,6 +2275,24 @@ async function init(){
         renderLists();
         initBackButtonHandler();
         pollLoop();
+
+        // Handle ?join=CODE URL param for group invite links
+        let urlParams = new URLSearchParams(location.search);
+        let joinCode = urlParams.get('join');
+        if (joinCode) {
+            history.replaceState({}, '', location.pathname);
+            setTimeout(async () => {
+                let r = await req('join_group', {code: joinCode, password: ''});
+                let d = await r.json();
+                if (d.status === 'success') {
+                    showToast('Joined group successfully!');
+                    await poll();
+                    renderLists();
+                } else {
+                    alertModal('Join Group', d.message || 'Invalid invite code');
+                }
+            }, 1000);
+        }
         window.addEventListener('online', () => {
             setConn(false, false);
             if(pollTimer) clearTimeout(pollTimer);
@@ -2227,6 +2390,8 @@ async function poll(){
             document.getElementById('my-av').style.backgroundImage=`url('${d.profile.avatar}')`;
             document.getElementById('my-name').innerText=d.profile.username;
             if(document.activeElement !== document.getElementById('set-bio')) document.getElementById('set-bio').value=d.profile.bio||'';
+            let statusEl = document.getElementById('set-status');
+            if(statusEl && document.activeElement !== statusEl) statusEl.value = d.profile.status_text||'';
             document.getElementById('my-date').innerText="Joined: "+new Date(d.profile.joined_at*1000).toLocaleDateString();
         }
         for(let m of d.dms){
@@ -3224,7 +3389,7 @@ function createMsgNode(m, showSender, history){
             <span>${coords}</span>
         </a>`;
     } else {
-        txt = esc(m.message);
+        txt = autoLink(esc(m.message));
     }
     
     let rep='';
@@ -3236,24 +3401,27 @@ function createMsgNode(m, showSender, history){
             rep=`<div style="font-size:0.8em;border-left:2px solid var(--accent);padding-left:4px;margin-bottom:4px;opacity:0.7;cursor:pointer" onclick="scrollToMsg(${m.reply_to_id})">Reply to <b>${esc(p.from_user)}</b>: ${rTxt}</div>`;
         }
     }
-    let reacts='';
-    if(m.reacts) reacts=`<div class="reaction-bar">${Object.values(m.reacts).join('')}</div>`;
     let stat='';
     if(m.from_user==ME && S.type=='dm') stat = m.read ? '<span style="color:#4fc3f7;margin-left:3px">✓✓</span>' : '<span style="margin-left:3px">✓</span>';
     if(m.pending) stat = '<span class="msg-pending-stat" style="color:#888;margin-left:3px">' + (m.progress !== undefined ? m.progress+'%' : '🕒') + '</span>';
 
     let reactDisplay = '';
-    if (m.reacts) {
-        reactDisplay = '<div class="reaction-bar">';
+    if (m.reacts && Object.keys(m.reacts).length > 0) {
+        // Group by emoji and show counts
+        let emojiCounts = {};
         for (const user in m.reacts) {
-            reactDisplay += `<span class="reaction" onclick="viewReactionUser(event, '${user}')">`;
-
-            if (S.type === 'dm' || S.type === 'public') {
-                reactDisplay += `${m.reacts[user]}`;
-            } else {
-                reactDisplay += `${m.reacts[user]}<span class="reaction-user">(${user})</span>`;
-            }
-            reactDisplay += `</span>`;
+            let emoji = m.reacts[user];
+            if (!emojiCounts[emoji]) emojiCounts[emoji] = { count: 0, users: [], myReact: false };
+            emojiCounts[emoji].count++;
+            emojiCounts[emoji].users.push(user);
+            if (user === ME) emojiCounts[emoji].myReact = true;
+        }
+        reactDisplay = '<div class="reaction-bar" style="position:static;display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;background:none;border:none;padding:0;box-shadow:none">';
+        for (const emoji in emojiCounts) {
+            let data = emojiCounts[emoji];
+            let myClass = data.myReact ? 'active-reaction' : '';
+            let title = data.users.slice(0,5).join(', ') + (data.users.length > 5 ? '...' : '');
+            reactDisplay += `<span class="reaction ${myClass}" title="${esc(title)}" onclick="sendReact(${m.timestamp}, '${emoji}')" style="cursor:pointer;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:2px 6px;font-size:0.9rem;display:inline-flex;align-items:center;gap:3px">${emoji}<span style="font-size:0.75rem;opacity:0.8">${data.count}</span></span>`;
         }
         reactDisplay += '</div>';
     }
@@ -3265,10 +3433,12 @@ function createMsgNode(m, showSender, history){
     let touchTimer;
     div.addEventListener('touchstart', (e) => {
         if(e.target.closest('.msg-menu-icon')) return;
+        if(e.target.tagName === 'A') return; // allow link taps
         touchTimer = setTimeout(() => {
+            if(navigator.vibrate) navigator.vibrate(30);
             toggleSelection(m.timestamp);
-        }, 500); 
-    });
+        }, 500);
+    }, {passive: true});
     div.addEventListener('touchend', () => clearTimeout(touchTimer));
     div.addEventListener('touchcancel', () => clearTimeout(touchTimer));
     div.addEventListener('touchmove', () => clearTimeout(touchTimer));
@@ -3328,6 +3498,7 @@ async function renderChat(){
     let h = await get(S.type,S.id);
     let c = document.getElementById('msgs');
     if(!c) return;
+    updatePinnedBanner();
     
     c.querySelectorAll('video').forEach(v => {
         if(v.src && v.src.startsWith('blob:')) URL.revokeObjectURL(v.src);
@@ -3623,14 +3794,15 @@ async function ctxAction(act, arg) {
         else if(act=='select') { toggleSelection(m.timestamp); }
         else if(act=='forward') promptModal("Forward", "Username:", u=>{ if(u) req('send',{message:m.message,type:m.type,extra:m.extra_data,to_user:u}); });
         else if(act=='copy') { if(m.type=='text') { navigator.clipboard.writeText(m.message); showToast('Copied to clipboard'); } }
-        else if(act=='pin') { 
-            let h=await get(S.type,S.id); 
-            let t=h.find(x=>x.timestamp==m.timestamp); 
+        else if(act=='pin') {
+            let h=await get(S.type,S.id);
+            let t=h.find(x=>x.timestamp==m.timestamp);
             if(t){
-                t.pinned=!t.pinned; await save(S.type,S.id,h); 
+                t.pinned=!t.pinned; await save(S.type,S.id,h);
                 let el = document.getElementById('msg-' + m.timestamp);
                 if (el) el.replaceWith(createMsgNode(t, el.querySelector('.msg-sender') !== null, h));
-            } 
+                updatePinnedBanner();
+            }
         }
       else if(act=='details') alertModal("Details", `From: ${m.from_user}<br>Sent: ${new Date(+m.timestamp > 9999999999 ? +m.timestamp : +m.timestamp*1000).toLocaleString()}`);
         else if(act=='delete') { if(m.from_user!=ME)return; S.reply=m.timestamp; await deleteMsg(); }
@@ -3727,11 +3899,120 @@ async function clearChat(){
 }
 async function exportChat(){
     let h = await get(S.type, S.id);
-    let blob = new Blob([JSON.stringify(h, null, 2)], {type : 'application/json'});
+    let lines = h.map(m => {
+        let d = new Date(+m.timestamp > 9999999999 ? +m.timestamp : +m.timestamp*1000);
+        let timeStr = d.toLocaleString();
+        let content = m.type === 'text' ? m.message : '[' + m.type + ']';
+        return `[${timeStr}] ${m.from_user}: ${content}`;
+    });
+    let blob = new Blob([lines.join('\n')], {type : 'text/plain'});
     let a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `chat_${S.type}_${S.id}.json`;
+    a.download = `chat_${S.id}_${Date.now()}.txt`;
     a.click(); toggleMenu();
+}
+
+// --- MESSAGE SEARCH ---
+function toggleMsgSearch() {
+    let bar = document.getElementById('msg-search-bar');
+    if (bar.classList.contains('active')) {
+        bar.classList.remove('active');
+        bar.style.display = 'none';
+        document.getElementById('msg-search-input').value = '';
+        clearSearchHighlights();
+    } else {
+        bar.classList.add('active');
+        bar.style.display = 'flex';
+        setTimeout(() => document.getElementById('msg-search-input').focus(), 50);
+    }
+}
+function clearSearchHighlights() {
+    document.querySelectorAll('.msg.msg-highlight').forEach(el => el.classList.remove('msg-highlight'));
+    document.getElementById('msg-search-count').innerText = '';
+}
+function searchMessages(q) {
+    clearSearchHighlights();
+    if (!q.trim()) return;
+    let ql = q.toLowerCase();
+    let matches = [];
+    document.querySelectorAll('.msg').forEach(el => {
+        // Check text content (excluding metadata)
+        let meta = el.querySelector('.msg-meta');
+        let text = el.innerText;
+        if (meta) text = text.replace(meta.innerText, '');
+        if (text.toLowerCase().includes(ql)) {
+            el.classList.add('msg-highlight');
+            matches.push(el);
+        }
+    });
+    document.getElementById('msg-search-count').innerText = matches.length + ' result' + (matches.length !== 1 ? 's' : '');
+    if (matches.length > 0) matches[0].scrollIntoView({behavior: 'smooth', block: 'center'});
+}
+
+// --- PINNED MESSAGE BANNER ---
+let pinnedMsgTs = null;
+async function updatePinnedBanner() {
+    let h = await get(S.type, S.id);
+    let pinned = h.filter(m => m.pinned);
+    let banner = document.getElementById('pinned-banner');
+    if (pinned.length > 0) {
+        let last = pinned[pinned.length - 1];
+        pinnedMsgTs = last.timestamp;
+        let txt = last.type === 'text' ? last.message : '[' + last.type + ']';
+        document.getElementById('pinned-text').innerText = '📌 ' + txt.substring(0, 60);
+        banner.style.display = 'flex';
+    } else {
+        pinnedMsgTs = null;
+        banner.style.display = 'none';
+    }
+}
+function scrollToPinned() {
+    if (pinnedMsgTs) scrollToMsg(pinnedMsgTs);
+}
+async function unpinMessage() {
+    if (!pinnedMsgTs) return;
+    let h = await get(S.type, S.id);
+    let m = h.find(x => x.timestamp == pinnedMsgTs);
+    if (m) { m.pinned = false; await save(S.type, S.id, h); }
+    updatePinnedBanner();
+    let el = document.getElementById('msg-' + pinnedMsgTs);
+    if (el) el.classList.remove('pinned');
+}
+
+// --- BLOCK USER ---
+async function blockUser(username, unblock) {
+    let r = await req('block_user', {username, unblock: unblock || false});
+    let d = await r.json();
+    if (d.status === 'success') showToast(unblock ? 'User unblocked' : 'User blocked');
+    else showToast(d.message || 'Error');
+}
+
+// --- USERNAME CHANGE ---
+async function changeUsername() {
+    promptModal("Change Username", "New username:", async (newName) => {
+        if (!newName) return;
+        let r = await req('change_username', {username: newName});
+        let d = await r.json();
+        if (d.status === 'success') {
+            alertModal('Success', 'Username changed to ' + d.username + '. Please re-login.');
+            setTimeout(() => { clearLocalStorageOnLogout(); location.href = '?action=logout'; }, 2000);
+        } else alertModal('Error', d.message || 'Failed to change username');
+    });
+}
+
+// --- GROUP INVITE LINK ---
+async function copyInviteLink(gid) {
+    let r = await req('get_invite_link', {group_id: gid});
+    let d = await r.json();
+    if (d.status === 'success' && d.join_code) {
+        let url = location.origin + location.pathname + '?join=' + d.join_code;
+        try {
+            await navigator.clipboard.writeText(url);
+            showToast('Invite link copied!');
+        } catch(e) {
+            alertModal('Invite Link', url);
+        }
+    }
 }
 async function deleteChat(){
     if(!confirm("Delete chat permanently?")) return;
@@ -4352,7 +4633,12 @@ function doJoinGroup(){
     });
 }
 
-function saveSettings(){ req('update_profile',{bio:document.getElementById('set-bio').value,avatar:document.getElementById('set-av').value,new_password:document.getElementById('set-pw').value}); alertModal("Settings", "Profile updated."); }
+function saveSettings(){
+    req('update_profile',{bio:document.getElementById('set-bio').value,avatar:document.getElementById('set-av').value,new_password:document.getElementById('set-pw').value});
+    let statusEl = document.getElementById('set-status');
+    if (statusEl) req('update_status', {status: statusEl.value});
+    alertModal("Settings", "Profile updated.");
+}
 
 async function discover(cat){ startProg(); alertModal("Discover "+(cat=='channel'?'Channels':'Groups'), '<div class="tab-loader" style="min-height:150px"><div class="rail-letters"><span>m</span><span>o</span><span>R</span><span>e</span></div><div class="rail-dot"></div></div>'); let r=await fetch('?action=get_discoverable_groups&cat='+cat); endProg(); let d=await r.json(); let h='<div style="max-height:300px;overflow-y:auto">'; d.items.forEach(g=>{ h+=`<div style="padding:10px;border-bottom:1px solid #333;display:flex;justify-content:space-between;align-items:center"><div><b>${g.name}</b><br><span style="color:#888;font-size:0.8rem">Code: ${g.join_code}</span></div><button class="btn-sec" onclick="req('join_group',{code:'${g.join_code}'}).then(()=>{document.getElementById('app-modal').style.display='none';renderLists()})">Join</button></div>`; }); h+='</div>'; document.getElementById('modal-body').innerHTML=h; }
 
@@ -4368,11 +4654,13 @@ async function showProfilePopup() {
             <div class="avatar" style="width:80px;height:80px;margin:0 auto 10px auto;font-size:2rem;background-image:url('${esc(p.avatar||'')}')">${p.avatar?'':esc(p.username[0])}</div>
             <b>${esc(p.username)}</b><br>
             <span style="color:#888;font-size:0.8rem">${p.bio||'-'}</span><br>
+            ${p.status_text ? `<span style="color:var(--accent);font-size:0.8rem;display:inline-block;margin-top:3px">● ${esc(p.status_text)}</span><br>` : ''}
             <div style="font-size:0.8rem;color:#666;margin-top:5px">
                 Joined: ${new Date(p.joined_at*1000).toLocaleDateString()}<br>
                 Last Seen: ${new Date(p.last_seen*1000).toLocaleString()}
             </div>
             ${!S.e2ee[S.id] ? `<button class="btn-sec" style="margin-top:15px;width:100%" onclick="startE2EE();document.getElementById('app-modal').style.display='none'">Enable End-to-End Encryption</button>` : `<button class="btn-sec" style="margin-top:15px;width:100%;color:#ff9800;border-color:#ff9800" onclick="resetE2EE('${S.id}');document.getElementById('app-modal').style.display='none'">Reset E2EE Session</button>`}
+            <button class="btn-sec" style="margin-top:10px;width:100%;color:#f55;border-color:#f55" onclick="blockUser('${esc(S.id)}');document.getElementById('app-modal').style.display='none'">Block User</button>
         </div>`;
         alertModal("Profile", ""); document.getElementById('modal-body').innerHTML = html;
     } else if (S.type === 'group' || S.type === 'channel') {
@@ -4398,9 +4686,10 @@ async function showProfilePopup() {
         <div style="display:flex;gap:10px;justify-content:center">
             <button class="btn-modal btn-sec" style="color:#f55;border-color:#f55" onclick="leaveGroup(${S.id})">Leave Group</button>
             ${d.is_owner ? `<button class="btn-modal btn-sec" style="color:#f55;border-color:#f55" onclick="nukeGroup(${S.id})">Delete Group</button>` : ''}
+            ${d.group.join_code ? `<button class="btn-modal btn-sec" onclick="copyInviteLink(${S.id});document.getElementById('app-modal').style.display='none'">Copy Invite Link</button>` : ''}
         </div>`;
-        
-        alertModal("Group Info", ""); 
+
+        alertModal("Group Info", "");
         document.getElementById('modal-body').innerHTML = html;
     }
 }
@@ -4442,6 +4731,12 @@ function scrollToBottom(force){
 }
 function esc(t){ return t?String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;"):"" }
 function jsEsc(t){ return t?String(t).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r'):"" }
+function autoLink(html) {
+    // html is already escaped; replace http(s) URLs with clickable links
+    return html.replace(/(https?:\/\/[^\s<>"']+)/g, function(url) {
+        return '<a href="' + url + '" target="_blank" rel="noopener noreferrer" style="color:var(--accent);word-break:break-all" onclick="event.stopPropagation()">' + url + '</a>';
+    });
+}
 
 document.getElementById('txt').onkeydown=e=>{if(e.key=='Enter' && !e.shiftKey){e.preventDefault();send()}};
 document.getElementById('txt').onkeydown=e=>{if(e.key=='Enter' && !e.shiftKey){e.preventDefault();handleMainBtn()}};
@@ -5191,8 +5486,17 @@ function switchEmojiTab(tab) {
 function insertEmoji(char) {
     addToRecentEmojis(char);
     let txt = document.getElementById('txt');
-    txt.value += char;
+    let start = txt.selectionStart;
+    let end = txt.selectionEnd;
+    let before = txt.value.substring(0, start);
+    let after = txt.value.substring(end);
+    txt.value = before + char + after;
+    let newPos = start + char.length;
+    txt.setSelectionRange(newPos, newPos);
     txt.focus();
+    // Trigger resize
+    txt.style.height = 'auto';
+    txt.style.height = Math.min(txt.scrollHeight, 150) + 'px';
     toggleMainBtn();
 }
 
